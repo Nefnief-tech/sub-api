@@ -84,22 +84,59 @@ class GotifyService extends ChangeNotifier {
     _channel?.sink.close();
     _reconnectTimer?.cancel();
 
-    final wsUrl = serverUrl
-        .replaceFirst(RegExp(r'^http'), 'ws')
-        .replaceAll(RegExp(r'/$'), '');
+    // Normalise inputs
+    final base       = serverUrl.trim().replaceAll(RegExp(r'/+$'), '');
+    final cleanToken = token.trim().replaceAll(RegExp(r'[#\s]'), '');
+
+    if (base.isEmpty || cleanToken.isEmpty) {
+      _connected = false;
+      _statusMsg = 'URL oder Token fehlt';
+      notifyListeners();
+      return;
+    }
+
+    // Build proper WSS URI with encoded query param
+    final httpUri = Uri.parse(base);
+    final wsScheme = httpUri.scheme == 'https' ? 'wss' : 'ws';
+    final wsUri = Uri(
+      scheme: wsScheme,
+      host:   httpUri.host,
+      port:   httpUri.hasPort ? httpUri.port : null,
+      path:   (httpUri.path.isEmpty ? '' : httpUri.path) + '/stream',
+      queryParameters: {'token': cleanToken},
+    );
+
+    _statusMsg = 'Verbinde…';
+    notifyListeners();
 
     try {
-      _channel = WebSocketChannel.connect(
-        Uri.parse('$wsUrl/stream?token=$token'),
-      );
+      _channel = WebSocketChannel.connect(wsUri);
+      // ready future catches 401 / handshake errors before first message
+      _channel!.ready.then((_) {
+        _connected = true;
+        _statusMsg = 'Verbunden — warte auf Nachrichten…';
+        notifyListeners();
+      }).catchError((e) {
+        _connected = false;
+        final msg = e.toString();
+        _statusMsg = msg.contains('401')
+            ? 'Fehler 401: Ungültiger Token.\nNutze einen CLIENT-Token (nicht App-Token)!'
+            : 'Verbindungsfehler: $e';
+        notifyListeners();
+        _scheduleReconnect(serverUrl, token);
+      });
+
       _channel!.stream.listen(
         _onMessage,
-        onError: (_) => _scheduleReconnect(serverUrl, token),
-        onDone: ()  => _scheduleReconnect(serverUrl, token),
+        onError: (e) {
+          _connected = false;
+          _statusMsg = 'Verbindung verloren: $e';
+          notifyListeners();
+          _scheduleReconnect(serverUrl, token);
+        },
+        onDone:  () => _scheduleReconnect(serverUrl, token),
+        cancelOnError: true,
       );
-      _connected = true;
-      _statusMsg = 'Verbunden — warte auf Nachrichten…';
-      notifyListeners();
     } catch (e) {
       _connected = false;
       _statusMsg = 'Verbindungsfehler: $e';
@@ -175,7 +212,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   Future<void> _loadAndConnect() async {
     final prefs = await SharedPreferences.getInstance();
     final url   = prefs.getString('gotify_url')   ?? '';
-    final token = prefs.getString('gotify_token')  ?? '';
+    // Strip any accidental '#' or whitespace that may have been saved previously
+    final token = (prefs.getString('gotify_token') ?? '').replaceAll(RegExp(r'[#\s]'), '');
     _urlCtrl.text   = url;
     _tokenCtrl.text = token;
     if (url.isNotEmpty && token.isNotEmpty) {
@@ -185,9 +223,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   Future<void> _save() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('gotify_url',   _urlCtrl.text.trim());
-    await prefs.setString('gotify_token', _tokenCtrl.text.trim());
-    _gotify.connect(_urlCtrl.text.trim(), _tokenCtrl.text.trim());
+    final url   = _urlCtrl.text.trim();
+    final token = _tokenCtrl.text.trim().replaceAll('#', '');
+    await prefs.setString('gotify_url',   url);
+    await prefs.setString('gotify_token', token);
+    _gotify.connect(url, token);
     setState(() => _showSettings = false);
   }
 
