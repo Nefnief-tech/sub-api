@@ -35,6 +35,17 @@ class GotifyTaskHandler extends TaskHandler {
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
     await Alarm.init();
+
+    // Alarm fires in THIS (background) isolate — forward the event to main.
+    Alarm.ringing.listen((alarmSet) {
+      for (final alarm in alarmSet.alarms) {
+        FlutterForegroundTask.sendDataToMain({
+          'type': 'alarm_ringing',
+          'id': alarm.id,
+        });
+      }
+    });
+
     final url   = await FlutterForegroundTask.getData<String>(key: 'gotify_url')   ?? '';
     final token = await FlutterForegroundTask.getData<String>(key: 'gotify_token') ?? '';
     _connect(url, token);
@@ -213,48 +224,75 @@ class AppState extends ChangeNotifier {
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
+// Global notifier subscribed BEFORE runApp so we never miss an alarm event.
+final _ringingAlarm = ValueNotifier<AlarmSettings?>(null);
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   FlutterForegroundTask.initCommunicationPort();
   await Alarm.init();
+
+  // Listen for future ring events (stream fires if main engine holds alarmTriggerApi).
+  Alarm.ringing.listen((alarmSet) {
+    if (alarmSet.alarms.isNotEmpty) {
+      _ringingAlarm.value = alarmSet.alarms.first;
+    }
+  });
+
+  // Cold-start check: alarm may already be ringing when app first opens.
+  await _checkAlarmRinging();
+
+  // Resume check: when full-screen intent brings app from background, the main
+  // engine was frozen so the stream event was missed — poll isRinging on resume.
+  AppLifecycleListener(
+    onResume: _checkAlarmRinging,
+  );
+
+  // Fallback: background isolate forwards alarm_ringing via sendDataToMain.
+  FlutterForegroundTask.addTaskDataCallback((data) {
+    if (data is! Map) return;
+    if ((data['type'] as String?) == 'alarm_ringing') {
+      _checkAlarmRinging();
+    }
+  });
+
   runApp(const VertretungsApp());
 }
 
-class VertretungsApp extends StatefulWidget {
-  const VertretungsApp({super.key});
-  @override State<VertretungsApp> createState() => _VertretungsAppState();
+Future<void> _checkAlarmRinging() async {
+  final alarms = await Alarm.getAlarms();
+  for (final alarm in alarms) {
+    if (await Alarm.isRinging(alarm.id)) {
+      _ringingAlarm.value = alarm;
+      return;
+    }
+  }
 }
 
-class _VertretungsAppState extends State<VertretungsApp> {
-  AlarmSettings? _ringingAlarm;
-
-  @override
-  void initState() {
-    super.initState();
-    Alarm.ringing.listen((alarmSet) {
-      if (alarmSet.alarms.isNotEmpty) {
-        setState(() => _ringingAlarm = alarmSet.alarms.first);
-      }
-    });
-  }
-
+class VertretungsApp extends StatelessWidget {
+  const VertretungsApp({super.key});
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Vertretungsplan Alarm',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: const ColorScheme.dark(surface: _bg, primary: _accent),
-        scaffoldBackgroundColor: _bg,
-        textTheme: GoogleFonts.spaceGroteskTextTheme()
-            .apply(bodyColor: _text, displayColor: _text),
-      ),
-      home: _ringingAlarm != null
-          ? RingScreen(
-              alarm: _ringingAlarm!,
-              onDismiss: () => setState(() => _ringingAlarm = null),
-            )
-          : const HomeScreen(),
+    return ValueListenableBuilder<AlarmSettings?>(
+      valueListenable: _ringingAlarm,
+      builder: (context, alarm, _) {
+        return MaterialApp(
+          title: 'Vertretungsplan Alarm',
+          debugShowCheckedModeBanner: false,
+          theme: ThemeData(
+            colorScheme: const ColorScheme.dark(surface: _bg, primary: _accent),
+            scaffoldBackgroundColor: _bg,
+            textTheme: GoogleFonts.spaceGroteskTextTheme()
+                .apply(bodyColor: _text, displayColor: _text),
+          ),
+          home: alarm != null
+              ? RingScreen(
+                  alarm: alarm,
+                  onDismiss: () => _ringingAlarm.value = null,
+                )
+              : const HomeScreen(),
+        );
+      },
     );
   }
 }
