@@ -1165,6 +1165,8 @@ async function testAlarm() {
     btn.disabled = false; icon.textContent = '⏰';
   }
 }
+
+function renderTimetable(tt) {
   const card = document.getElementById('timetable-grid-card');
   const grid = document.getElementById('timetable-grid');
   if (!tt || !tt.slots || !tt.slots.length) {
