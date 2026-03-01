@@ -129,6 +129,10 @@ def _run_scrape(job_id: int | None = None):
                f"class {plan.get('class_name','?')}, {len(plan.get('days',[]))} days")
         log.info(msg)
         db.add_log("success", msg, job_id)
+
+        # Check if early periods are cancelled and adjust alarm accordingly
+        _check_alarm_adjustment(plan)
+
         return {"status": "success", "message": msg, "plan": plan}
     except Exception as e:
         msg = str(e)
@@ -323,7 +327,104 @@ def test_class_reminder() -> dict:
 
 # ── Alarm notification ────────────────────────────────────────────────────────
 
-_DOW_TO_NAME = {v: k for k, v in _DOW.items()}  # 0→"Montag", …
+_GERMAN_DAYS = ["Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag","Sonntag"]
+
+
+def _parse_periods(period_str: str) -> list[int]:
+    """Parse period string to list of ints: '1' → [1], '1-2' → [1,2]."""
+    nums = re.findall(r'\d+', str(period_str))
+    if len(nums) >= 2:
+        return list(range(int(nums[0]), int(nums[-1]) + 1))
+    return [int(nums[0])] if nums else []
+
+
+def _check_alarm_adjustment(plan: dict):
+    """After a scrape, check if today's early periods are cancelled and
+    send an adjusted alarm push so Tasker can update the alarm in real time."""
+    settings = db.get_settings()
+    if settings.get("alarm_enabled", "false").lower() != "true":
+        return
+    if not settings.get("gotify_url") or not settings.get("gotify_token"):
+        return
+
+    stored = db.get_timetable()
+    if not stored:
+        return
+
+    tt   = stored["timetable"]
+    days = tt.get("days", [])
+
+    today_wd   = datetime.now().weekday()   # 0=Mon … 4=Fri
+    today_name = _GERMAN_DAYS[today_wd]
+    if today_wd >= 5 or today_name not in days:
+        return
+    day_idx = days.index(today_name)
+
+    # Collect cancelled periods from today's substitute plan entries
+    cancelled: set[int] = set()
+    for day in plan.get("days", []):
+        label = day.get("date", "")
+        # Match by weekday name in the label (e.g. "Donnerstag, 28.02.2026")
+        if today_name.lower() not in label.lower():
+            continue
+        for entry in day.get("entries", []):
+            if entry.get("empty"):
+                continue
+            info = entry.get("info", "")
+            emoji, _color = nt._classify(info)
+            if emoji == "🚫":
+                for p in _parse_periods(entry.get("period", "")):
+                    cancelled.add(p)
+
+    if not cancelled:
+        return  # nothing changed for early periods
+
+    # Find first non-cancelled period from timetable for today
+    slots_today = []
+    for slot in sorted(tt.get("slots", []), key=lambda s: s.get("period", 99)):
+        cells = slot.get("cells", [])
+        if day_idx >= len(cells):
+            continue
+        cell    = cells[day_idx]
+        subject = cell.get("subject", "") if isinstance(cell, dict) else str(cell)
+        if not subject:
+            continue
+        slots_today.append({
+            "period":     slot["period"],
+            "start_time": slot.get("start_time", ""),
+            "subject":    subject,
+            "room":       cell.get("room", "") if isinstance(cell, dict) else "",
+        })
+
+    if not slots_today:
+        return
+
+    # Skip cancelled periods to find effective first class
+    skipped = [s["period"] for s in slots_today if s["period"] in cancelled]
+    effective = next((s for s in slots_today if s["period"] not in cancelled), None)
+    if not effective or not skipped:
+        return  # no change or everything cancelled
+
+    # Calculate adjusted alarm time
+    try:
+        h, m = map(int, effective["start_time"].split(":"))
+        offset = int(settings.get("alarm_offset") or 45)
+        t = datetime(2000, 1, 1, h, m) - timedelta(minutes=offset)
+        alarm_time = f"{t.hour:02d}:{t.minute:02d}"
+    except ValueError:
+        return
+
+    try:
+        nt.send_alarm_adjustment(
+            settings["gotify_url"], settings["gotify_token"],
+            alarm_time=alarm_time,
+            skipped_periods=skipped,
+            first_class=effective,
+            priority=int(settings.get("alarm_priority") or 9),
+        )
+        log.info("Alarm adjusted to %s (skipped periods: %s)", alarm_time, skipped)
+    except Exception as e:
+        log.error("Alarm adjustment failed: %s", e)
 
 
 def _get_next_school_day_first_class() -> dict | None:
