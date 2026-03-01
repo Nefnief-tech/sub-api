@@ -2,26 +2,196 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 // ── Colors ────────────────────────────────────────────────────────────────────
-const _bg     = Color(0xFF0D0F14);
-const _bg2    = Color(0xFF151820);
-const _bg3    = Color(0xFF1C2030);
-const _border = Color(0xFF252A3A);
-const _accent = Color(0xFF22D1A5);
-const _accentDim = Color(0x1A22D1A5);
-const _red    = Color(0xFFF43F5E);
-const _redDim = Color(0x1AF43F5E);
-const _text   = Color(0xFFE2E8F0);
-const _muted  = Color(0xFF64748B);
+const _bg       = Color(0xFF0D0F14);
+const _bg2      = Color(0xFF151820);
+const _bg3      = Color(0xFF1C2030);
+const _border   = Color(0xFF252A3A);
+const _accent   = Color(0xFF22D1A5);
+const _accentDim= Color(0x1A22D1A5);
+const _red      = Color(0xFFF43F5E);
+const _redDim   = Color(0x1AF43F5E);
+const _text     = Color(0xFFE2E8F0);
+const _muted    = Color(0xFF64748B);
 
+// ── Foreground service entry point ────────────────────────────────────────────
+@pragma('vm:entry-point')
+void startCallback() {
+  FlutterForegroundTask.setTaskHandler(GotifyTaskHandler());
+}
+
+// ── Task handler (runs in background isolate) ─────────────────────────────────
+class GotifyTaskHandler extends TaskHandler {
+  WebSocketChannel? _channel;
+  Timer? _reconnectTimer;
+  static final _alarmRx = RegExp(r'⏰ Wecker[:\s]+(\d{1,2}):(\d{2})');
+
+  @override
+  Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
+    final url   = await FlutterForegroundTask.getData<String>(key: 'gotify_url')   ?? '';
+    final token = await FlutterForegroundTask.getData<String>(key: 'gotify_token') ?? '';
+    _connect(url, token);
+  }
+
+  @override
+  void onRepeatEvent(DateTime timestamp) {
+    // Watchdog: if channel is null something died — reload creds and reconnect
+    if (_channel == null) _reconnectFromPrefs();
+  }
+
+  @override
+  Future<void> onDestroy(DateTime timestamp) async {
+    _reconnectTimer?.cancel();
+    _channel?.sink.close();
+  }
+
+  @override
+  void onReceiveData(Object data) {
+    if (data is Map) {
+      final url   = (data['url']   as String? ?? '').trim();
+      final token = (data['token'] as String? ?? '').replaceAll(RegExp(r'[#\s]'), '');
+      _reconnectTimer?.cancel();
+      _channel?.sink.close();
+      _channel = null;
+      _connect(url, token);
+    }
+  }
+
+  Future<void> _reconnectFromPrefs() async {
+    final url   = await FlutterForegroundTask.getData<String>(key: 'gotify_url')   ?? '';
+    final token = await FlutterForegroundTask.getData<String>(key: 'gotify_token') ?? '';
+    _connect(url, token);
+  }
+
+  void _connect(String url, String token) {
+    if (url.isEmpty || token.isEmpty) {
+      _send({'type': 'status', 'connected': false, 'msg': 'URL oder Token fehlt'});
+      return;
+    }
+    _send({'type': 'status', 'connected': false, 'msg': 'Verbinde…'});
+
+    final base    = url.replaceAll(RegExp(r'/+$'), '');
+    final httpUri = Uri.parse(base);
+    final wsUri   = Uri(
+      scheme: httpUri.scheme == 'https' ? 'wss' : 'ws',
+      host:   httpUri.host,
+      port:   httpUri.hasPort ? httpUri.port : null,
+      path:   '${httpUri.path}/stream',
+      queryParameters: {'token': token},
+    );
+
+    try {
+      _channel = WebSocketChannel.connect(wsUri);
+      _channel!.ready.then((_) {
+        _send({'type': 'status', 'connected': true, 'msg': 'Verbunden — warte auf Nachrichten…'});
+        FlutterForegroundTask.updateService(notificationText: '🟢 Verbunden mit Gotify');
+      }).catchError((e) {
+        _channel = null;
+        final hint = e.toString().contains('401')
+            ? 'Fehler 401: Client-Token benötigt!'
+            : 'Fehler: ${e.toString().substring(0, 60)}';
+        _send({'type': 'status', 'connected': false, 'msg': hint});
+        FlutterForegroundTask.updateService(notificationText: '🔴 Verbindungsfehler');
+        _scheduleReconnect(url, token);
+      });
+
+      _channel!.stream.listen(
+        _onMessage,
+        onError: (_) {
+          _channel = null;
+          _send({'type': 'status', 'connected': false, 'msg': 'Verbindung verloren — verbinde neu…'});
+          _scheduleReconnect(url, token);
+        },
+        onDone: () {
+          _channel = null;
+          _send({'type': 'status', 'connected': false, 'msg': 'Getrennt — verbinde neu…'});
+          _scheduleReconnect(url, token);
+        },
+        cancelOnError: true,
+      );
+    } catch (e) {
+      _channel = null;
+      _send({'type': 'status', 'connected': false, 'msg': 'Fehler: $e'});
+      _scheduleReconnect(url, token);
+    }
+  }
+
+  void _scheduleReconnect(String url, String token) {
+    _reconnectTimer?.cancel();
+    _reconnectTimer = Timer(const Duration(seconds: 15), () => _connect(url, token));
+  }
+
+  void _onMessage(dynamic raw) {
+    try {
+      final msg   = jsonDecode(raw as String);
+      final title = (msg['title'] as String?) ?? '';
+      final match = _alarmRx.firstMatch(title);
+      if (match == null) return;
+      final h = int.parse(match.group(1)!);
+      final m = int.parse(match.group(2)!);
+      final t = '${h.toString().padLeft(2,'0')}:${m.toString().padLeft(2,'0')}';
+      _send({'type': 'alarm', 'hour': h, 'minute': m, 'time': t, 'label': title});
+      FlutterForegroundTask.updateService(notificationText: '⏰ Wecker gesetzt: $t');
+    } catch (_) {}
+  }
+
+  void _send(Map<String, dynamic> data) =>
+      FlutterForegroundTask.sendDataToMain(data);
+}
+
+// ── Alarm platform channel ────────────────────────────────────────────────────
+class AlarmService {
+  static const _ch = MethodChannel('com.nefnief.vertretungsplan/alarm');
+  static Future<void> setAlarm(int h, int m, String label) =>
+      _ch.invokeMethod('setAlarm', {'hour': h, 'minute': m, 'label': label});
+}
+
+// ── App state (UI only, updated via task callbacks) ───────────────────────────
+class AlarmEntry {
+  final String time, label;
+  final DateTime setAt;
+  AlarmEntry({required this.time, required this.label, required this.setAt});
+}
+
+class AppState extends ChangeNotifier {
+  bool   _connected = false;
+  String _statusMsg = 'Starte Dienst…';
+  final List<AlarmEntry> history = [];
+
+  bool   get connected => _connected;
+  String get statusMsg => _statusMsg;
+
+  void onTaskData(Object data) {
+    if (data is! Map) return;
+    final type = data['type'] as String?;
+    if (type == 'status') {
+      _connected = (data['connected'] as bool?) ?? false;
+      _statusMsg = (data['msg']       as String?) ?? '';
+      notifyListeners();
+    } else if (type == 'alarm') {
+      final h     = (data['hour']   as int?)    ?? 0;
+      final m     = (data['minute'] as int?)    ?? 0;
+      final t     = (data['time']   as String?) ?? '$h:$m';
+      final label = (data['label']  as String?) ?? '⏰ Wecker';
+      history.insert(0, AlarmEntry(time: t, label: label, setAt: DateTime.now()));
+      if (history.length > 20) history.removeLast();
+      _statusMsg = 'Wecker gestellt: $t Uhr';
+      notifyListeners();
+      AlarmService.setAlarm(h, m, label);
+    }
+  }
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Permission.scheduleExactAlarm.request();
+  FlutterForegroundTask.initCommunicationPort();
   runApp(const VertretungsApp());
 }
 
@@ -33,154 +203,13 @@ class VertretungsApp extends StatelessWidget {
       title: 'Vertretungsplan Alarm',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: const ColorScheme.dark(
-          surface: _bg,
-          primary: _accent,
-        ),
+        colorScheme: const ColorScheme.dark(surface: _bg, primary: _accent),
         scaffoldBackgroundColor: _bg,
-        textTheme: GoogleFonts.spaceGroteskTextTheme().apply(
-          bodyColor: _text,
-          displayColor: _text,
-        ),
+        textTheme: GoogleFonts.spaceGroteskTextTheme()
+            .apply(bodyColor: _text, displayColor: _text),
       ),
       home: const HomeScreen(),
     );
-  }
-}
-
-// ── Alarm Platform Channel ─────────────────────────────────────────────────────
-class AlarmService {
-  static const _channel = MethodChannel('com.nefnief.vertretungsplan/alarm');
-
-  static Future<void> setAlarm(int hour, int minute, String label) async {
-    await _channel.invokeMethod('setAlarm', {
-      'hour':   hour,
-      'minute': minute,
-      'label':  label,
-    });
-  }
-}
-
-// ── Gotify WebSocket Service ───────────────────────────────────────────────────
-class AlarmEntry {
-  final String time;
-  final String label;
-  final DateTime setAt;
-  AlarmEntry({required this.time, required this.label, required this.setAt});
-}
-
-class GotifyService extends ChangeNotifier {
-  WebSocketChannel? _channel;
-  Timer? _reconnectTimer;
-  bool _connected = false;
-  String _statusMsg = 'Nicht verbunden';
-  final List<AlarmEntry> history = [];
-  static final _alarmRx = RegExp(r'⏰ Wecker: (\d{2}):(\d{2})');
-
-  bool get connected => _connected;
-  String get statusMsg => _statusMsg;
-
-  void connect(String serverUrl, String token) {
-    _channel?.sink.close();
-    _reconnectTimer?.cancel();
-
-    // Normalise inputs
-    final base       = serverUrl.trim().replaceAll(RegExp(r'/+$'), '');
-    final cleanToken = token.trim().replaceAll(RegExp(r'[#\s]'), '');
-
-    if (base.isEmpty || cleanToken.isEmpty) {
-      _connected = false;
-      _statusMsg = 'URL oder Token fehlt';
-      notifyListeners();
-      return;
-    }
-
-    // Build proper WSS URI with encoded query param
-    final httpUri = Uri.parse(base);
-    final wsScheme = httpUri.scheme == 'https' ? 'wss' : 'ws';
-    final wsUri = Uri(
-      scheme: wsScheme,
-      host:   httpUri.host,
-      port:   httpUri.hasPort ? httpUri.port : null,
-      path:   (httpUri.path.isEmpty ? '' : httpUri.path) + '/stream',
-      queryParameters: {'token': cleanToken},
-    );
-
-    _statusMsg = 'Verbinde…';
-    notifyListeners();
-
-    try {
-      _channel = WebSocketChannel.connect(wsUri);
-      // ready future catches 401 / handshake errors before first message
-      _channel!.ready.then((_) {
-        _connected = true;
-        _statusMsg = 'Verbunden — warte auf Nachrichten…';
-        notifyListeners();
-      }).catchError((e) {
-        _connected = false;
-        final msg = e.toString();
-        _statusMsg = msg.contains('401')
-            ? 'Fehler 401: Ungültiger Token.\nNutze einen CLIENT-Token (nicht App-Token)!'
-            : 'Verbindungsfehler: $e';
-        notifyListeners();
-        _scheduleReconnect(serverUrl, token);
-      });
-
-      _channel!.stream.listen(
-        _onMessage,
-        onError: (e) {
-          _connected = false;
-          _statusMsg = 'Verbindung verloren: $e';
-          notifyListeners();
-          _scheduleReconnect(serverUrl, token);
-        },
-        onDone:  () => _scheduleReconnect(serverUrl, token),
-        cancelOnError: true,
-      );
-    } catch (e) {
-      _connected = false;
-      _statusMsg = 'Verbindungsfehler: $e';
-      notifyListeners();
-      _scheduleReconnect(serverUrl, token);
-    }
-  }
-
-  void disconnect() {
-    _reconnectTimer?.cancel();
-    _channel?.sink.close();
-    _connected = false;
-    _statusMsg = 'Nicht verbunden';
-    notifyListeners();
-  }
-
-  void _scheduleReconnect(String url, String token) {
-    _connected = false;
-    _statusMsg = 'Verbindung getrennt — verbinde neu…';
-    notifyListeners();
-    _reconnectTimer = Timer(const Duration(seconds: 10), () => connect(url, token));
-  }
-
-  void _onMessage(dynamic raw) {
-    try {
-      final msg = jsonDecode(raw as String);
-      final title = (msg['title'] as String?) ?? '';
-      final match = _alarmRx.firstMatch(title);
-      if (match == null) return;
-
-      final hour   = int.parse(match.group(1)!);
-      final minute = int.parse(match.group(2)!);
-      final time   = '${match.group(1)}:${match.group(2)}';
-      final label  = (msg['message'] as String?)
-          ?.split('\n')
-          .skip(1)
-          .firstWhere((l) => l.trim().isNotEmpty, orElse: () => 'Schule') ?? 'Schule';
-
-      AlarmService.setAlarm(hour, minute, 'Schule');
-      history.insert(0, AlarmEntry(time: time, label: label, setAt: DateTime.now()));
-      if (history.length > 20) history.removeLast();
-      _statusMsg = 'Wecker gestellt: $time Uhr';
-      notifyListeners();
-    } catch (_) {}
   }
 }
 
@@ -190,13 +219,14 @@ class HomeScreen extends StatefulWidget {
   @override State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateMixin {
-  final _gotify = GotifyService();
+class _HomeScreenState extends State<HomeScreen>
+    with SingleTickerProviderStateMixin {
+  final _state      = AppState();
   final _urlCtrl    = TextEditingController();
   final _tokenCtrl  = TextEditingController();
   bool _showSettings = false;
   late AnimationController _pulseCtrl;
-  late Animation<double> _pulse;
+  late Animation<double>   _pulse;
 
   @override
   void initState() {
@@ -204,153 +234,178 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     _pulseCtrl = AnimationController(vsync: this, duration: const Duration(seconds: 2))
       ..repeat(reverse: true);
     _pulse = Tween(begin: 0.5, end: 1.0).animate(
-      CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut));
-    _gotify.addListener(() => setState(() {}));
-    _loadAndConnect();
+        CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut));
+    _state.addListener(() => setState(() {}));
+    FlutterForegroundTask.addTaskDataCallback(_state.onTaskData);
+    _initService();
   }
 
-  Future<void> _loadAndConnect() async {
+  @override
+  void dispose() {
+    FlutterForegroundTask.removeTaskDataCallback(_state.onTaskData);
+    _pulseCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _initService() async {
+    await [
+      Permission.notification,
+      Permission.scheduleExactAlarm,
+    ].request();
+
+    FlutterForegroundTask.init(
+      androidNotificationOptions: AndroidNotificationOptions(
+        channelId:          'gotify_channel',
+        channelName:        'Gotify Hintergrunddienst',
+        channelDescription: 'Empfängt und setzt Alarm-Benachrichtigungen',
+        onlyAlertOnce:      true,
+      ),
+      iosNotificationOptions: const IOSNotificationOptions(showNotification: false),
+      foregroundTaskOptions: ForegroundTaskOptions(
+        eventAction:    ForegroundTaskEventAction.repeat(120000), // 2 minutes in ms
+        autoRunOnBoot:  true,
+        allowWakeLock:  true,
+        allowWifiLock:  true,
+      ),
+    );
+
     final prefs = await SharedPreferences.getInstance();
     final url   = prefs.getString('gotify_url')   ?? '';
-    // Strip any accidental '#' or whitespace that may have been saved previously
     final token = (prefs.getString('gotify_token') ?? '').replaceAll(RegExp(r'[#\s]'), '');
     _urlCtrl.text   = url;
     _tokenCtrl.text = token;
-    if (url.isNotEmpty && token.isNotEmpty) {
-      _gotify.connect(url, token);
+
+    // Save into foreground task store
+    await FlutterForegroundTask.saveData(key: 'gotify_url',   value: url);
+    await FlutterForegroundTask.saveData(key: 'gotify_token', value: token);
+
+    if (await FlutterForegroundTask.isRunningService) {
+      await FlutterForegroundTask.restartService();
+    } else if (url.isNotEmpty && token.isNotEmpty) {
+      await _startService();
+    } else {
+      setState(() => _showSettings = true); // first launch → go to settings
     }
+  }
+
+  Future<void> _startService() async {
+    await FlutterForegroundTask.startService(
+      serviceId:        256,
+      notificationTitle: 'Vertretungsplan',
+      notificationText:  '🔴 Verbinde…',
+      callback:          startCallback,
+    );
   }
 
   Future<void> _save() async {
     final prefs = await SharedPreferences.getInstance();
     final url   = _urlCtrl.text.trim();
-    final token = _tokenCtrl.text.trim().replaceAll('#', '');
+    final token = _tokenCtrl.text.trim().replaceAll(RegExp(r'[#\s]'), '');
     await prefs.setString('gotify_url',   url);
     await prefs.setString('gotify_token', token);
-    _gotify.connect(url, token);
+    await FlutterForegroundTask.saveData(key: 'gotify_url',   value: url);
+    await FlutterForegroundTask.saveData(key: 'gotify_token', value: token);
+
+    if (await FlutterForegroundTask.isRunningService) {
+      FlutterForegroundTask.sendDataToTask({'url': url, 'token': token});
+    } else {
+      await _startService();
+    }
     setState(() => _showSettings = false);
   }
 
   @override
-  void dispose() {
-    _gotify.disconnect();
-    _pulseCtrl.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: SafeArea(
-        child: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 300),
-          child: _showSettings ? _buildSettings() : _buildHome(),
-        ),
+  Widget build(BuildContext context) => Scaffold(
+    body: SafeArea(
+      child: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 300),
+        child: _showSettings ? _buildSettings() : _buildHome(),
       ),
-    );
-  }
+    ),
+  );
 
-  Widget _buildHome() {
-    return Padding(
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _buildHeader(),
-          const SizedBox(height: 24),
-          _buildStatusCard(),
-          const SizedBox(height: 16),
-          _buildNextAlarm(),
-          const SizedBox(height: 16),
-          Expanded(child: _buildHistory()),
-        ],
+  Widget _buildHome() => Padding(
+    padding: const EdgeInsets.all(20),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      _buildHeader(),
+      const SizedBox(height: 24),
+      _buildStatusCard(),
+      const SizedBox(height: 16),
+      _buildNextAlarm(),
+      const SizedBox(height: 16),
+      Expanded(child: _buildHistory()),
+    ]),
+  );
+
+  Widget _buildHeader() => Row(children: [
+    Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text('Vertretungsplan',
+        style: GoogleFonts.spaceGrotesk(fontSize: 22, fontWeight: FontWeight.w700, color: _text)),
+      Text('Wecker-Automatik',
+        style: GoogleFonts.jetBrainsMono(fontSize: 12, color: _accent)),
+    ]),
+    const Spacer(),
+    GestureDetector(
+      onTap: () => setState(() => _showSettings = true),
+      child: Container(
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: _bg3, borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: _border)),
+        child: const Icon(Icons.settings_outlined, color: _muted, size: 20),
       ),
-    );
-  }
-
-  Widget _buildHeader() {
-    return Row(
-      children: [
-        Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text('Vertretungsplan',
-            style: GoogleFonts.spaceGrotesk(
-              fontSize: 22, fontWeight: FontWeight.w700, color: _text)),
-          Text('Wecker-Automatik',
-            style: GoogleFonts.jetBrainsMono(fontSize: 12, color: _accent)),
-        ]),
-        const Spacer(),
-        GestureDetector(
-          onTap: () => setState(() => _showSettings = true),
-          child: Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: _bg3, borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: _border)),
-            child: const Icon(Icons.settings_outlined, color: _muted, size: 20),
-          ),
-        ),
-      ],
-    );
-  }
+    ),
+  ]);
 
   Widget _buildStatusCard() {
-    final connected = _gotify.connected;
+    final ok = _state.connected;
     return AnimatedContainer(
       duration: const Duration(milliseconds: 400),
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: connected ? _accentDim : _redDim,
+        color: ok ? _accentDim : _redDim,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: connected ? _accent.withOpacity(0.3) : _red.withOpacity(0.3)),
+        border: Border.all(color: ok ? _accent.withOpacity(0.3) : _red.withOpacity(0.3)),
       ),
       child: Row(children: [
         AnimatedBuilder(
           animation: _pulse,
           builder: (_, __) => Opacity(
-            opacity: connected ? _pulse.value : 1.0,
+            opacity: ok ? _pulse.value : 1.0,
             child: Container(
               width: 10, height: 10,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: connected ? _accent : _red,
+                color: ok ? _accent : _red,
                 boxShadow: [BoxShadow(
-                  color: (connected ? _accent : _red).withOpacity(0.5),
-                  blurRadius: 8 * (connected ? _pulse.value : 1.0),
+                  color: (ok ? _accent : _red).withOpacity(0.5),
+                  blurRadius: 8 * (ok ? _pulse.value : 1.0),
                 )],
               ),
             ),
           ),
         ),
         const SizedBox(width: 12),
-        Expanded(
-          child: Text(_gotify.statusMsg,
-            style: GoogleFonts.jetBrainsMono(
-              fontSize: 12,
-              color: connected ? _accent : _red,
-            )),
-        ),
+        Expanded(child: Text(_state.statusMsg,
+          style: GoogleFonts.jetBrainsMono(fontSize: 12, color: ok ? _accent : _red))),
       ]),
     );
   }
 
   Widget _buildNextAlarm() {
-    final last = _gotify.history.isEmpty ? null : _gotify.history.first;
+    final last = _state.history.isEmpty ? null : _state.history.first;
     return Container(
       padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: _bg2,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: _border),
-      ),
+      decoration: BoxDecoration(color: _bg2, borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: _border)),
       child: Row(children: [
-        Text('⏰', style: const TextStyle(fontSize: 32)),
+        const Text('⏰', style: TextStyle(fontSize: 32)),
         const SizedBox(width: 16),
         Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text(last != null ? '${last.time} Uhr' : '– – : – –',
             style: GoogleFonts.spaceGrotesk(
               fontSize: 36, fontWeight: FontWeight.w800,
-              color: last != null ? _text : _muted,
-              letterSpacing: -1)),
+              color: last != null ? _text : _muted, letterSpacing: -1)),
           Text(last != null ? 'Letzter Wecker gestellt' : 'Noch kein Wecker empfangen',
             style: GoogleFonts.spaceGrotesk(fontSize: 12, color: _muted)),
         ]),
@@ -359,142 +414,108 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   }
 
   Widget _buildHistory() {
-    if (_gotify.history.isEmpty) {
-      return Center(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Icon(Icons.notifications_none_outlined, color: _muted, size: 40),
-          const SizedBox(height: 12),
-          Text('Keine Alarme bisher',
-            style: GoogleFonts.spaceGrotesk(color: _muted, fontSize: 14)),
-          const SizedBox(height: 4),
-          Text('Wecker werden automatisch gestellt,\nsobald eine Nachricht eintrifft',
-            textAlign: TextAlign.center,
-            style: GoogleFonts.spaceGrotesk(color: _muted.withOpacity(0.6), fontSize: 12)),
-        ]),
-      );
+    if (_state.history.isEmpty) {
+      return Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+        Icon(Icons.notifications_none_outlined, color: _muted, size: 40),
+        const SizedBox(height: 12),
+        Text('Keine Alarme bisher',
+          style: GoogleFonts.spaceGrotesk(color: _muted, fontSize: 14)),
+        const SizedBox(height: 4),
+        Text('Wecker werden automatisch gestellt,\nsobald eine Nachricht eintrifft',
+          textAlign: TextAlign.center,
+          style: GoogleFonts.spaceGrotesk(color: _muted.withOpacity(0.6), fontSize: 12)),
+      ]));
     }
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text('Verlauf', style: GoogleFonts.spaceGrotesk(
-          fontSize: 13, color: _muted, fontWeight: FontWeight.w600)),
-        const SizedBox(height: 8),
-        Expanded(
-          child: ListView.separated(
-            itemCount: _gotify.history.length,
-            separatorBuilder: (_, __) => const SizedBox(height: 8),
-            itemBuilder: (_, i) {
-              final e = _gotify.history[i];
-              return Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                decoration: BoxDecoration(
-                  color: _bg2, borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: _border)),
-                child: Row(children: [
-                  Text('⏰', style: const TextStyle(fontSize: 18)),
-                  const SizedBox(width: 12),
-                  Expanded(child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(e.time,
-                        style: GoogleFonts.jetBrainsMono(
-                          fontSize: 16, fontWeight: FontWeight.w600, color: _accent)),
-                      Text(e.label, maxLines: 1, overflow: TextOverflow.ellipsis,
-                        style: GoogleFonts.spaceGrotesk(fontSize: 12, color: _muted)),
-                    ],
-                  )),
-                  Text(
-                    '${e.setAt.hour.toString().padLeft(2,'0')}:${e.setAt.minute.toString().padLeft(2,'0')}',
-                    style: GoogleFonts.jetBrainsMono(fontSize: 11, color: _muted)),
-                ]),
-              );
-            },
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text('Verlauf', style: GoogleFonts.spaceGrotesk(
+        fontSize: 13, color: _muted, fontWeight: FontWeight.w600)),
+      const SizedBox(height: 8),
+      Expanded(child: ListView.separated(
+        itemCount: _state.history.length,
+        separatorBuilder: (_, __) => const SizedBox(height: 8),
+        itemBuilder: (_, i) {
+          final e = _state.history[i];
+          return Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(color: _bg2, borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: _border)),
+            child: Row(children: [
+              const Text('⏰', style: TextStyle(fontSize: 18)),
+              const SizedBox(width: 12),
+              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(e.time,
+                  style: GoogleFonts.jetBrainsMono(fontSize: 16, fontWeight: FontWeight.w600, color: _accent)),
+                Text(e.label, maxLines: 1, overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.spaceGrotesk(fontSize: 12, color: _muted)),
+              ])),
+              Text('${e.setAt.hour.toString().padLeft(2,'0')}:${e.setAt.minute.toString().padLeft(2,'0')}',
+                style: GoogleFonts.jetBrainsMono(fontSize: 11, color: _muted)),
+            ]),
+          );
+        },
+      )),
+    ]);
+  }
+
+  Widget _buildSettings() => Padding(
+    padding: const EdgeInsets.all(20),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        GestureDetector(
+          onTap: () => setState(() => _showSettings = false),
+          child: Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(color: _bg3, borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: _border)),
+            child: const Icon(Icons.arrow_back, color: _text, size: 18),
           ),
         ),
-      ],
-    );
-  }
-
-  Widget _buildSettings() {
-    return Padding(
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(children: [
-            GestureDetector(
-              onTap: () => setState(() => _showSettings = false),
-              child: Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: _bg3, borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: _border)),
-                child: const Icon(Icons.arrow_back, color: _text, size: 18),
-              ),
-            ),
-            const SizedBox(width: 14),
-            Text('Einstellungen',
-              style: GoogleFonts.spaceGrotesk(
-                fontSize: 20, fontWeight: FontWeight.w700)),
-          ]),
-          const SizedBox(height: 32),
-          _field('Gotify Server URL', _urlCtrl,
-            hint: 'https://push.meinserver.de',
-            icon: Icons.dns_outlined),
-          const SizedBox(height: 16),
-          _field('App Token', _tokenCtrl,
-            hint: '••••••••••••••••',
-            icon: Icons.vpn_key_outlined, obscure: true),
-          const SizedBox(height: 12),
-          Text(
-            'Den Token findest du in der Gotify Web-UI unter Apps → dein App → Token',
-            style: GoogleFonts.spaceGrotesk(fontSize: 12, color: _muted)),
-          const Spacer(),
-          SizedBox(width: double.infinity,
-            child: ElevatedButton(
-              onPressed: _save,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: _accent, foregroundColor: _bg,
-                padding: const EdgeInsets.symmetric(vertical: 16),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              ),
-              child: Text('Verbinden',
-                style: GoogleFonts.spaceGrotesk(
-                  fontWeight: FontWeight.w700, fontSize: 16)),
-            ),
+        const SizedBox(width: 14),
+        Text('Einstellungen',
+          style: GoogleFonts.spaceGrotesk(fontSize: 20, fontWeight: FontWeight.w700)),
+      ]),
+      const SizedBox(height: 32),
+      _field('Gotify Server URL', _urlCtrl,
+        hint: 'https://push.meinserver.de', icon: Icons.dns_outlined),
+      const SizedBox(height: 16),
+      _field('Client Token', _tokenCtrl,
+        hint: '••••••••••••••••', icon: Icons.vpn_key_outlined, obscure: true),
+      const SizedBox(height: 12),
+      Text('Client-Token aus der Gotify Web-UI → Clients (nicht Apps!)',
+        style: GoogleFonts.spaceGrotesk(fontSize: 12, color: _muted)),
+      const Spacer(),
+      SizedBox(width: double.infinity,
+        child: ElevatedButton(
+          onPressed: _save,
+          style: ElevatedButton.styleFrom(
+            backgroundColor: _accent, foregroundColor: _bg,
+            padding: const EdgeInsets.symmetric(vertical: 16),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           ),
-        ],
+          child: Text('Verbinden',
+            style: GoogleFonts.spaceGrotesk(fontWeight: FontWeight.w700, fontSize: 16)),
+        ),
       ),
-    );
-  }
+    ]),
+  );
 
   Widget _field(String label, TextEditingController ctrl,
-      {String hint = '', IconData? icon, bool obscure = false}) {
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text(label,
-        style: GoogleFonts.spaceGrotesk(fontSize: 13, color: _muted, fontWeight: FontWeight.w500)),
+      {String hint = '', IconData? icon, bool obscure = false}) =>
+    Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(label, style: GoogleFonts.spaceGrotesk(fontSize: 13, color: _muted, fontWeight: FontWeight.w500)),
       const SizedBox(height: 6),
       TextField(
-        controller: ctrl,
-        obscureText: obscure,
+        controller: ctrl, obscureText: obscure,
         style: GoogleFonts.jetBrainsMono(fontSize: 14, color: _text),
         decoration: InputDecoration(
           hintText: hint,
           hintStyle: GoogleFonts.jetBrainsMono(color: _muted.withOpacity(0.5)),
           prefixIcon: icon != null ? Icon(icon, color: _muted, size: 18) : null,
-          filled: true,
-          fillColor: _bg3,
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(10),
-            borderSide: const BorderSide(color: _border)),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(10),
-            borderSide: const BorderSide(color: _border)),
-          focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(10),
-            borderSide: const BorderSide(color: _accent)),
+          filled: true, fillColor: _bg3,
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: _border)),
+          enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: _border)),
+          focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: _accent)),
         ),
       ),
     ]);
-  }
 }
