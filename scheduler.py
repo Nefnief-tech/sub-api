@@ -545,6 +545,84 @@ def test_alarm_notification() -> dict:
         return {"status": "error", "message": str(e)}
 
 
+def simulate_alarm_adjustment(cancel_periods: list[int]) -> dict:
+    """Simulate N cancelled periods and send the adjusted alarm notification."""
+    settings = db.get_settings()
+    if not settings.get("gotify_url") or not settings.get("gotify_token"):
+        return {"status": "error", "message": "Gotify nicht konfiguriert"}
+
+    stored = db.get_timetable()
+    if not stored:
+        return {"status": "error", "message": "Kein Stundenplan – bitte zuerst synchronisieren"}
+
+    tt   = stored["timetable"]
+    days = tt.get("days", [])
+
+    # Use next school day for simulation
+    first = _get_next_school_day_first_class()
+    if not first:
+        return {"status": "error", "message": "Keine Stunden im Stundenplan"}
+
+    day_name = first["day"]
+    if day_name not in days:
+        return {"status": "error", "message": f"Tag '{day_name}' nicht im Stundenplan"}
+    day_idx = days.index(day_name)
+
+    cancelled = set(cancel_periods)
+
+    # Collect all slots for that day, sorted by period
+    slots_day = []
+    for slot in sorted(tt.get("slots", []), key=lambda s: s.get("period", 99)):
+        cells = slot.get("cells", [])
+        if day_idx >= len(cells):
+            continue
+        cell = cells[day_idx]
+        subj = cell.get("subject", "") if isinstance(cell, dict) else str(cell)
+        if not subj:
+            continue
+        slots_day.append({
+            "period":     slot["period"],
+            "start_time": slot.get("start_time", ""),
+            "subject":    subj,
+            "room":       cell.get("room", "") if isinstance(cell, dict) else "",
+            "day":        day_name,
+        })
+
+    if not slots_day:
+        return {"status": "error", "message": "Keine Stunden für diesen Tag"}
+
+    effective = next((s for s in slots_day if s["period"] not in cancelled), None)
+    if not effective:
+        return {"status": "error", "message": "Alle Stunden wären entfallen – kein Wecker möglich"}
+
+    skipped = [s["period"] for s in slots_day if s["period"] in cancelled]
+    if not skipped:
+        return {"status": "error", "message": "Keine der simulierten Stunden existiert im Stundenplan"}
+
+    try:
+        h, m = map(int, (effective["start_time"] or "08:00").split(":"))
+        offset = int(settings.get("alarm_offset") or 45)
+        t = datetime(2000, 1, 1, h, m) - timedelta(minutes=offset)
+        alarm_time = f"{t.hour:02d}:{t.minute:02d}"
+        nt.send_alarm_adjustment(
+            settings["gotify_url"], settings["gotify_token"],
+            alarm_time=alarm_time,
+            skipped_periods=skipped,
+            first_class=effective,
+            priority=int(settings.get("alarm_priority") or 9),
+        )
+        label = f"Std. {', '.join(str(p) for p in sorted(skipped))} entfallen"
+        return {
+            "status": "success",
+            "message": f"Simulation: {label} → Wecker auf {alarm_time} Uhr angepasst ({effective['subject']})",
+            "alarm_time": alarm_time,
+            "skipped": skipped,
+            "first_class": effective,
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
 def get_reminder_jobs() -> list[dict]:
     """Return currently scheduled reminder jobs for display in UI."""
     if not _scheduler:

@@ -417,6 +417,24 @@
       transition: all 0.15s;
     }
     .preset-btn:hover { color: var(--cyan); border-color: var(--border-hi); background: var(--cyan-dim); }
+    .sim-period-btn {
+      background: var(--bg1);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 13px;
+      padding: 8px 16px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .sim-period-btn:hover { color: var(--text); border-color: rgba(255,255,255,0.2); }
+    .sim-period-btn.active {
+      background: rgba(245,79,88,0.15);
+      border-color: #f54f58;
+      color: #f54f58;
+      font-weight: 600;
+    }
 
     /* ── Logs ────────────────────────────────────────────────── */
     .log-header {
@@ -758,6 +776,25 @@
       </div>
       <div class="help-text" style="margin-top:10px;">
         Stundenplan wird automatisch jeden Sonntag um 18:00 Uhr aktualisiert. Erinnerungen werden dann neu geplant.
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">🧪 Vertretungsplan simulieren <div class="sep"></div></div>
+      <div style="margin-bottom:12px; font-size:13px; color:var(--muted);">
+        Simuliere ausgefallene Stunden und prüfe, wie der Wecker angepasst wird.
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px;" id="simPeriodBtns">
+        <button class="sim-period-btn active" data-period="1" onclick="toggleSimPeriod(this)">1. Std</button>
+        <button class="sim-period-btn" data-period="2" onclick="toggleSimPeriod(this)">2. Std</button>
+        <button class="sim-period-btn" data-period="3" onclick="toggleSimPeriod(this)">3. Std</button>
+        <button class="sim-period-btn" data-period="4" onclick="toggleSimPeriod(this)">4. Std</button>
+      </div>
+      <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+        <button class="btn btn-primary" onclick="simulateAdjustment()" id="simBtn">
+          <span id="simIcon">🔁</span> Simulation starten
+        </button>
+        <div id="sim-result" style="font-size:13px; color:var(--muted);"></div>
       </div>
     </div>
 
@@ -1169,6 +1206,40 @@ async function testAlarm() {
     toast('Test fehlgeschlagen: ' + e.message, 'err');
   } finally {
     btn.disabled = false; icon.textContent = '⏰';
+  }
+}
+
+function toggleSimPeriod(btn) {
+  btn.classList.toggle('active');
+}
+
+async function simulateAdjustment() {
+  const btn  = document.getElementById('simBtn');
+  const icon = document.getElementById('simIcon');
+  const res  = document.getElementById('sim-result');
+  const activeBtns = document.querySelectorAll('.sim-period-btn.active');
+  const periods = Array.from(activeBtns).map(b => parseInt(b.dataset.period));
+  if (!periods.length) {
+    toast('Bitte mindestens eine Stunde auswählen', 'err'); return;
+  }
+  btn.disabled = true; icon.textContent = '⏳'; res.textContent = '';
+  try {
+    const r = await fetch('/api/timetable/simulate-adjustment', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ cancel_periods: periods }),
+    });
+    const d = await safeJson(r);
+    if (!r.ok) throw new Error(d.detail || d.message || JSON.stringify(d));
+    const skipped = (d.skipped || periods).join(', ');
+    const fc = d.first_class || {};
+    res.innerHTML = `✅ Std. <b>${skipped}</b> entfallen → Wecker: <b style="color:var(--cyan)">${d.alarm_time} Uhr</b> (${fc.subject || ''} · ${fc.room || ''})`;
+    toast(d.message, 'ok');
+  } catch(e) {
+    res.textContent = '❌ ' + e.message;
+    toast('Simulation fehlgeschlagen: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false; icon.textContent = '🔁';
   }
 }
 

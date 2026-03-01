@@ -167,6 +167,18 @@ def test_alarm():
     return result
 
 
+class SimulateIn(BaseModel):
+    cancel_periods: list[int] = [1]
+
+
+@app.post("/api/timetable/simulate-adjustment")
+def simulate_adjustment(body: SimulateIn):
+    result = sched.simulate_alarm_adjustment(body.cancel_periods)
+    if result["status"] == "error":
+        raise HTTPException(500, result["message"])
+    return result
+
+
 @app.get("/api/timetable")
 def get_timetable():
     stored = db.get_timetable()
