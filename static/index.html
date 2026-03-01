@@ -796,6 +796,16 @@
         </button>
         <div id="sim-result" style="font-size:13px; color:var(--muted);"></div>
       </div>
+      <div style="margin-top:16px; padding-top:16px; border-top:1px solid var(--border);">
+        <div style="font-size:12px; color:var(--muted); margin-bottom:8px;">⏰ Direkter Wecker-Test (sendet Gotify-Nachricht mit eigener Uhrzeit)</div>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <input type="time" id="customAlarmTime" style="background:var(--bg3); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:6px 10px; font-size:14px; outline:none;">
+          <button class="btn btn-secondary" onclick="sendCustomAlarm()" id="customAlarmBtn">
+            <span id="customAlarmIcon">⏰</span> Wecker jetzt setzen
+          </button>
+          <div id="custom-alarm-result" style="font-size:13px; color:var(--muted);"></div>
+        </div>
+      </div>
     </div>
 
     <div class="card" id="reminder-jobs-card" style="display:none;">
@@ -1212,6 +1222,43 @@ async function testAlarm() {
 function toggleSimPeriod(btn) {
   btn.classList.toggle('active');
 }
+
+async function sendCustomAlarm() {
+  const timeVal = document.getElementById('customAlarmTime').value;
+  if (!timeVal) { toast('Bitte eine Uhrzeit eingeben', 'err'); return; }
+  const [h, m] = timeVal.split(':');
+  const btn  = document.getElementById('customAlarmBtn');
+  const icon = document.getElementById('customAlarmIcon');
+  const res  = document.getElementById('custom-alarm-result');
+  btn.disabled = true; icon.textContent = '⏳'; res.textContent = '';
+  try {
+    const r = await fetch('/api/test/alarm', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ hour: parseInt(h), minute: parseInt(m) }),
+    });
+    const d = await safeJson(r);
+    if (!r.ok) throw new Error(d.detail || d.message || JSON.stringify(d));
+    res.innerHTML = `✅ Gotify-Nachricht gesendet: <b style="color:var(--cyan)">${timeVal} Uhr</b>`;
+    toast('Wecker-Nachricht gesendet!', 'ok');
+  } catch(e) {
+    res.textContent = '❌ ' + e.message;
+    toast('Fehler: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false; icon.textContent = '⏰';
+  }
+}
+
+// Pre-fill custom alarm time to 2 minutes from now
+(function() {
+  const d = new Date(Date.now() + 2 * 60000);
+  const hh = String(d.getHours()).padStart(2,'0');
+  const mm = String(d.getMinutes()).padStart(2,'0');
+  document.addEventListener('DOMContentLoaded', () => {
+    const el = document.getElementById('customAlarmTime');
+    if (el) el.value = `${hh}:${mm}`;
+  });
+})();
 
 async function simulateAdjustment() {
   const btn  = document.getElementById('simBtn');

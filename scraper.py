@@ -4,6 +4,8 @@ Handles CSRF-protected login, then parses the Vertretungsplan and Stundenplan.
 """
 import re
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 
 
@@ -13,6 +15,13 @@ class ElternPortalScraper:
         self.username = username
         self.password = password
         self.session = requests.Session()
+        # Retry up to 3 times on connection errors and 5xx responses
+        retry = Retry(total=3, backoff_factor=1,
+                      status_forcelist=[500, 502, 503, 504],
+                      allowed_methods=["GET", "POST"])
+        adapter = HTTPAdapter(max_retries=retry)
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (compatible; SubstituteScraper/1.0)",
         })

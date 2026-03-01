@@ -171,6 +171,19 @@ class SimulateIn(BaseModel):
     cancel_periods: list[int] = [1]
 
 
+class CustomAlarmIn(BaseModel):
+    hour: int
+    minute: int
+
+
+@app.post("/api/test/alarm")
+def test_custom_alarm(body: CustomAlarmIn):
+    result = sched.send_custom_alarm(body.hour, body.minute)
+    if result["status"] == "error":
+        raise HTTPException(500, result["message"])
+    return result
+
+
 @app.post("/api/timetable/simulate-adjustment")
 def simulate_adjustment(body: SimulateIn):
     result = sched.simulate_alarm_adjustment(body.cancel_periods)

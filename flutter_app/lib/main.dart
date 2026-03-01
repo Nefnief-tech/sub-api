@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:alarm/alarm.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -34,6 +34,7 @@ class GotifyTaskHandler extends TaskHandler {
 
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
+    await Alarm.init();
     final url   = await FlutterForegroundTask.getData<String>(key: 'gotify_url')   ?? '';
     final token = await FlutterForegroundTask.getData<String>(key: 'gotify_token') ?? '';
     _connect(url, token);
@@ -127,7 +128,7 @@ class GotifyTaskHandler extends TaskHandler {
     _reconnectTimer = Timer(const Duration(seconds: 15), () => _connect(url, token));
   }
 
-  void _onMessage(dynamic raw) {
+  Future<void> _onMessage(dynamic raw) async {
     try {
       final msg   = jsonDecode(raw as String);
       final title = (msg['title'] as String?) ?? '';
@@ -136,20 +137,44 @@ class GotifyTaskHandler extends TaskHandler {
       final h = int.parse(match.group(1)!);
       final m = int.parse(match.group(2)!);
       final t = '${h.toString().padLeft(2,'0')}:${m.toString().padLeft(2,'0')}';
+
+      // Schedule alarm directly from the background isolate using the alarm package.
+      // This works because alarm registers as a FlutterPlugin and is available
+      // in the background engine (no main isolate needed).
+      final now = DateTime.now();
+      var alarmDt = DateTime(now.year, now.month, now.day, h, m);
+      if (alarmDt.isBefore(now)) alarmDt = alarmDt.add(const Duration(days: 1));
+
+      await Alarm.set(
+        alarmSettings: AlarmSettings(
+          id: 1,
+          dateTime: alarmDt,
+          assetAudioPath: null, // use device default alarm sound
+          loopAudio: true,
+          vibrate: true,
+          androidFullScreenIntent: true,
+          androidStopAlarmOnTermination: false,
+          volumeSettings: VolumeSettings.fade(
+            volume: 0.8,
+            fadeDuration: const Duration(seconds: 5),
+          ),
+          notificationSettings: NotificationSettings(
+            title: '⏰ Wecker — $t Uhr',
+            body: title,
+            stopButton: 'Snooze',
+          ),
+        ),
+      );
+
       _send({'type': 'alarm', 'hour': h, 'minute': m, 'time': t, 'label': title});
       FlutterForegroundTask.updateService(notificationText: '⏰ Wecker gesetzt: $t');
-    } catch (_) {}
+    } catch (e) {
+      _send({'type': 'status', 'connected': true, 'msg': 'Alarm-Fehler: $e'});
+    }
   }
 
   void _send(Map<String, dynamic> data) =>
       FlutterForegroundTask.sendDataToMain(data);
-}
-
-// ── Alarm platform channel ────────────────────────────────────────────────────
-class AlarmService {
-  static const _ch = MethodChannel('com.nefnief.vertretungsplan/alarm');
-  static Future<void> setAlarm(int h, int m, String label) =>
-      _ch.invokeMethod('setAlarm', {'hour': h, 'minute': m, 'label': label});
 }
 
 // ── App state (UI only, updated via task callbacks) ───────────────────────────
@@ -181,9 +206,8 @@ class AppState extends ChangeNotifier {
       final label = (data['label']  as String?) ?? '⏰ Wecker';
       history.insert(0, AlarmEntry(time: t, label: label, setAt: DateTime.now()));
       if (history.length > 20) history.removeLast();
-      _statusMsg = 'Wecker gestellt: $t Uhr';
+      _statusMsg = '✅ Wecker gestellt: $t Uhr';
       notifyListeners();
-      AlarmService.setAlarm(h, m, label);
     }
   }
 }
@@ -192,6 +216,7 @@ class AppState extends ChangeNotifier {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   FlutterForegroundTask.initCommunicationPort();
+  await Alarm.init();
   runApp(const VertretungsApp());
 }
 

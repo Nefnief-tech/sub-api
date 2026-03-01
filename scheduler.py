@@ -112,34 +112,39 @@ def _run_scrape(job_id: int | None = None):
 
     include_empty = settings.get("notify_empty", "false").lower() == "true"
 
-    try:
-        s = sc.ElternPortalScraper(settings["base_url"], settings["username"], settings["password"])
-        s.login()
-        plan = s.get_substitute_plan()
+    last_exc = None
+    for attempt in range(3):                     # up to 3 attempts with fresh sessions
+        try:
+            s = sc.ElternPortalScraper(settings["base_url"], settings["username"], settings["password"])
+            s.login()
+            plan = s.get_substitute_plan()
 
-        sent_to: list[str] = []
-        if has_discord:
-            nt.send_to_discord(settings["webhook_url"], plan, include_empty)
-            sent_to.append("Discord")
-        if has_gotify:
-            nt.send_to_gotify(settings["gotify_url"], settings["gotify_token"],
-                              plan, int(settings.get("gotify_priority") or 5), include_empty)
-            sent_to.append("Gotify")
+            sent_to: list[str] = []
+            if has_discord:
+                nt.send_to_discord(settings["webhook_url"], plan, include_empty)
+                sent_to.append("Discord")
+            if has_gotify:
+                nt.send_to_gotify(settings["gotify_url"], settings["gotify_token"],
+                                  plan, int(settings.get("gotify_priority") or 5), include_empty)
+                sent_to.append("Gotify")
 
-        msg = (f"Sent to {', '.join(sent_to)} — "
-               f"class {plan.get('class_name','?')}, {len(plan.get('days',[]))} days")
-        log.info(msg)
-        db.add_log("success", msg, job_id)
+            msg = (f"Sent to {', '.join(sent_to)} — "
+                   f"class {plan.get('class_name','?')}, {len(plan.get('days',[]))} days")
+            log.info(msg)
+            db.add_log("success", msg, job_id)
 
-        # Check if early periods are cancelled and adjust alarm accordingly
-        _check_alarm_adjustment(plan)
+            # Check if early periods are cancelled and adjust alarm accordingly
+            _check_alarm_adjustment(plan)
 
-        return {"status": "success", "message": msg, "plan": plan}
-    except Exception as e:
-        msg = str(e)
-        log.error("Scrape failed: %s", msg)
-        db.add_log("error", msg, job_id)
-        return {"status": "error", "message": msg}
+            return {"status": "success", "message": msg, "plan": plan}
+        except Exception as e:
+            last_exc = e
+            log.warning("Scrape attempt %d failed: %s", attempt + 1, e)
+
+    msg = str(last_exc)
+    log.error("Scrape failed after 3 attempts: %s", msg)
+    db.add_log("error", msg, job_id)
+    return {"status": "error", "message": msg}
 
 
 def run_now() -> dict:
@@ -541,6 +546,25 @@ def test_alarm_notification() -> dict:
             priority=int(settings.get("alarm_priority") or 9),
         )
         return {"status": "success", "message": f"Test-Wecker gesendet: {alarm_time} Uhr ({first['day']})"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+def send_custom_alarm(hour: int, minute: int) -> dict:
+    """Send a Gotify alarm notification with a custom time (for testing)."""
+    settings = db.get_settings()
+    if not settings.get("gotify_url") or not settings.get("gotify_token"):
+        return {"status": "error", "message": "Gotify nicht konfiguriert"}
+    alarm_time = f"{hour:02d}:{minute:02d}"
+    try:
+        nt.send_alarm_notification(
+            settings["gotify_url"], settings["gotify_token"],
+            alarm_time=alarm_time,
+            subject="Test", room="---",
+            day="Heute", period=1,
+            priority=int(settings.get("alarm_priority") or 9),
+        )
+        return {"status": "success", "message": f"Wecker-Nachricht gesendet: {alarm_time} Uhr"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
