@@ -345,3 +345,31 @@ def send_class_reminder(gotify_url: str, token: str, subject: str, room: str,
     resp.raise_for_status()
     return True
 
+
+
+def send_alarm_notification(gotify_url: str, token: str, alarm_time: str,
+                            subject: str, room: str, day: str, period: int,
+                            priority: int = 9) -> bool:
+    """Send a nightly alarm-setter notification.
+    Title is exactly '⏰ Wecker: HH:MM' so Tasker can regex-match and set the alarm.
+    """
+    full  = _subject_full(subject) if subject else subject
+    emoji = SUBJECT_EMOJI.get(full, "📚")
+
+    resp = requests.post(
+        f"{gotify_url.rstrip('/')}/message",
+        json={
+            "title":    f"⏰ Wecker: {alarm_time}",
+            "message":  (
+                f"Guten Morgen — dein Wecker wurde für **{alarm_time} Uhr** gestellt.\n\n"
+                f"{emoji} Erste Stunde: **{full}**\n"
+                f"🚪 Raum: {room or '–'} · 📅 {day} · {period}. Stunde"
+            ),
+            "priority": priority,
+            "extras":   {"client::display": {"contentType": "text/markdown"}},
+        },
+        params={"token": token},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    return True

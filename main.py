@@ -53,6 +53,10 @@ class SettingsIn(BaseModel):
     notify_empty:      str = "false"
     reminders_enabled: str = "false"
     reminder_priority: str = "7"
+    alarm_enabled:     str = "false"
+    alarm_offset:      str = "45"
+    alarm_send_time:   str = "22:00"
+    alarm_priority:    str = "9"
 
 
 @app.get("/api/settings")
@@ -76,6 +80,7 @@ def save_settings(body: SettingsIn):
     stored = db.get_timetable()
     if stored:
         sched._schedule_timetable_reminders(stored["timetable"])
+    sched._schedule_alarm_job()
     return {"ok": True}
 
 
@@ -149,6 +154,14 @@ def sync_timetable():
 @app.post("/api/timetable/test-reminder")
 def test_reminder():
     result = sched.test_class_reminder()
+    if result["status"] == "error":
+        raise HTTPException(500, result["message"])
+    return result
+
+
+@app.post("/api/timetable/test-alarm")
+def test_alarm():
+    result = sched.test_alarm_notification()
     if result["status"] == "error":
         raise HTTPException(500, result["message"])
     return result

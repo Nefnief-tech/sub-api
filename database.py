@@ -60,6 +60,10 @@ DEFAULT_SETTINGS = {
     "reminders_enabled": "false",
     "reminder_priority": "7",
     "notify_empty": "false",
+    "alarm_enabled": "false",
+    "alarm_offset": "45",
+    "alarm_send_time": "22:00",
+    "alarm_priority": "9",
 }
 
 

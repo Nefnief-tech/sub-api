@@ -48,6 +48,9 @@ def start_scheduler():
     if stored:
         _schedule_timetable_reminders(stored["timetable"])
 
+    # Schedule nightly alarm notification
+    _schedule_alarm_job()
+
     log.info("Scheduler started")
 
 
@@ -314,6 +317,128 @@ def test_class_reminder() -> dict:
             priority=int(settings.get("reminder_priority") or 7),
         )
         return {"status": "success", "message": f"Test-Erinnerung gesendet: {sample['subject']} · {sample['day']} {sample['period']}. Std"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+# ── Alarm notification ────────────────────────────────────────────────────────
+
+_DOW_TO_NAME = {v: k for k, v in _DOW.items()}  # 0→"Montag", …
+
+
+def _get_next_school_day_first_class() -> dict | None:
+    """Return the first non-empty class for the next school day (Mon–Fri)."""
+    stored = db.get_timetable()
+    if not stored:
+        return None
+    tt    = stored["timetable"]
+    days  = tt.get("days", [])
+    slots = tt.get("slots", [])
+
+    now = datetime.now()
+    for delta in range(1, 8):
+        candidate = now + timedelta(days=delta)
+        wd = candidate.weekday()        # 0=Mon … 6=Sun
+        if wd >= 5:
+            continue
+        day_name = _DOW_TO_NAME.get(wd)
+        if not day_name or day_name not in days:
+            continue
+        day_idx = days.index(day_name)
+        for slot in sorted(slots, key=lambda s: s.get("period", 99)):
+            cells = slot.get("cells", [])
+            if day_idx >= len(cells):
+                continue
+            cell = cells[day_idx]
+            subj = cell.get("subject", "") if isinstance(cell, dict) else str(cell)
+            room = cell.get("room", "")    if isinstance(cell, dict) else ""
+            if subj:
+                return {
+                    "day":        day_name,
+                    "period":     slot["period"],
+                    "start_time": slot.get("start_time", ""),
+                    "subject":    subj,
+                    "room":       room,
+                }
+        break
+    return None
+
+
+def _fire_alarm_notification():
+    settings = db.get_settings()
+    if settings.get("alarm_enabled", "false").lower() != "true":
+        return
+    if not settings.get("gotify_url") or not settings.get("gotify_token"):
+        log.warning("Alarm notification: Gotify not configured")
+        return
+
+    first = _get_next_school_day_first_class()
+    if not first or not first["start_time"]:
+        log.info("Alarm notification: no class found for next school day")
+        return
+
+    try:
+        h, m = map(int, first["start_time"].split(":"))
+        offset = int(settings.get("alarm_offset") or 45)
+        t = datetime(2000, 1, 1, h, m) - timedelta(minutes=offset)
+        alarm_time = f"{t.hour:02d}:{t.minute:02d}"
+    except ValueError:
+        log.error("Alarm notification: could not parse start_time %s", first["start_time"])
+        return
+
+    try:
+        nt.send_alarm_notification(
+            settings["gotify_url"], settings["gotify_token"],
+            alarm_time=alarm_time,
+            subject=first["subject"], room=first["room"],
+            day=first["day"], period=first["period"],
+            priority=int(settings.get("alarm_priority") or 9),
+        )
+        log.info("Alarm notification sent: %s for %s", alarm_time, first["day"])
+    except Exception as e:
+        log.error("Alarm notification failed: %s", e)
+
+
+def _schedule_alarm_job(settings: dict | None = None):
+    if not _scheduler:
+        return
+    if settings is None:
+        settings = db.get_settings()
+    send_time = settings.get("alarm_send_time", "22:00")
+    try:
+        sh, sm = map(int, send_time.split(":"))
+    except ValueError:
+        sh, sm = 22, 0
+    _scheduler.add_job(
+        _fire_alarm_notification,
+        CronTrigger(hour=sh, minute=sm, day_of_week="0-4", timezone="Europe/Berlin"),
+        id="alarm_nightly",
+        name=f"Wecker-Benachrichtigung ({send_time} Uhr)",
+        replace_existing=True,
+    )
+    log.info("Alarm job scheduled at %s", send_time)
+
+
+def test_alarm_notification() -> dict:
+    settings = db.get_settings()
+    if not settings.get("gotify_url") or not settings.get("gotify_token"):
+        return {"status": "error", "message": "Gotify nicht konfiguriert"}
+    first = _get_next_school_day_first_class()
+    if not first:
+        return {"status": "error", "message": "Kein Stundenplan / keine Stunden für morgen"}
+    try:
+        h, m = map(int, (first["start_time"] or "08:00").split(":"))
+        offset = int(settings.get("alarm_offset") or 45)
+        t = datetime(2000, 1, 1, h, m) - timedelta(minutes=offset)
+        alarm_time = f"{t.hour:02d}:{t.minute:02d}"
+        nt.send_alarm_notification(
+            settings["gotify_url"], settings["gotify_token"],
+            alarm_time=alarm_time,
+            subject=first["subject"], room=first["room"],
+            day=first["day"], period=first["period"],
+            priority=int(settings.get("alarm_priority") or 9),
+        )
+        return {"status": "success", "message": f"Test-Wecker gesendet: {alarm_time} Uhr ({first['day']})"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 

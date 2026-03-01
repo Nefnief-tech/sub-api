@@ -630,6 +630,34 @@
       </div>
     </div>
 
+    <div class="card">
+      <div class="card-title">⏰ Wecker (Tasker) <div class="sep"></div></div>
+      <div class="toggle-row">
+        <div>
+          <div class="toggle-label">Automatischer Wecker</div>
+          <div class="toggle-desc">Sendet jeden Abend eine Gotify-Push mit dem Wecker-Titel <code style="color:var(--cyan)">⏰ Wecker: HH:MM</code> — Tasker kann diesen abfangen und den Alarm stellen</div>
+        </div>
+        <div class="toggle" id="t-alarm-enabled" onclick="toggleSwitch(this)"></div>
+      </div>
+      <div class="form-grid" style="margin-top:10px;">
+        <div class="field">
+          <label>Versendeuhrzeit (Abends)</label>
+          <input type="text" id="s-alarm-send-time" placeholder="22:00">
+          <div class="help-text">Wann die Wecker-Nachricht gesendet wird</div>
+        </div>
+        <div class="field">
+          <label>Vorlaufzeit (Minuten vor 1. Std)</label>
+          <input type="text" id="s-alarm-offset" placeholder="45">
+          <div class="help-text">z.B. 45 → Wecker 45 min vor Schulbeginn</div>
+        </div>
+        <div class="field">
+          <label>Priorität (1–10)</label>
+          <input type="text" id="s-alarm-priority" placeholder="9">
+          <div class="help-text">Hoch genug, dass Tasker es erkennt</div>
+        </div>
+      </div>
+    </div>
+
     <div class="form-actions">
       <button class="btn btn-ghost" onclick="loadSettings()">↩ Zurücksetzen</button>
       <button class="btn btn-primary" onclick="saveSettings()">💾 Speichern</button>
@@ -721,6 +749,9 @@
         <button class="btn btn-ghost" onclick="testReminder()" id="testReminderBtn">
           <span id="testReminderIcon">🔔</span> Test-Erinnerung senden
         </button>
+        <button class="btn btn-ghost" onclick="testAlarm()" id="testAlarmBtn">
+          <span id="testAlarmIcon">⏰</span> Test-Wecker senden
+        </button>
         <div id="sync-status" style="font-size:12px; color:var(--muted);">
           Noch nicht synchronisiert
         </div>
@@ -805,6 +836,11 @@ async function loadSettings() {
     tog.classList.toggle('on', s.notify_empty === 'true');
     const togR = document.getElementById('t-reminders-enabled');
     togR.classList.toggle('on', s.reminders_enabled === 'true');
+    const togA = document.getElementById('t-alarm-enabled');
+    togA.classList.toggle('on', s.alarm_enabled === 'true');
+    document.getElementById('s-alarm-send-time').value = s.alarm_send_time || '22:00';
+    document.getElementById('s-alarm-offset').value    = s.alarm_offset    || '45';
+    document.getElementById('s-alarm-priority').value  = s.alarm_priority  || '9';
     updateConfigBadge(s);
   } catch(e) { toast('Einstellungen konnten nicht geladen werden', 'err'); }
 }
@@ -821,6 +857,10 @@ async function saveSettings() {
     notify_empty:      document.getElementById('t-notify-empty').classList.contains('on') ? 'true' : 'false',
     reminders_enabled: document.getElementById('t-reminders-enabled').classList.contains('on') ? 'true' : 'false',
     reminder_priority: document.getElementById('s-reminder-priority').value.trim() || '7',
+    alarm_enabled:     document.getElementById('t-alarm-enabled').classList.contains('on') ? 'true' : 'false',
+    alarm_offset:      document.getElementById('s-alarm-offset').value.trim() || '45',
+    alarm_send_time:   document.getElementById('s-alarm-send-time').value.trim() || '22:00',
+    alarm_priority:    document.getElementById('s-alarm-priority').value.trim() || '9',
   };
   try {
     const r = await fetch('/api/settings', {
@@ -1110,7 +1150,21 @@ async function testReminder() {
   }
 }
 
-function renderTimetable(tt) {
+async function testAlarm() {
+  const btn = document.getElementById('testAlarmBtn');
+  const icon = document.getElementById('testAlarmIcon');
+  btn.disabled = true; icon.textContent = '⏳';
+  try {
+    const r = await fetch('/api/timetable/test-alarm', { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || JSON.stringify(d));
+    toast(d.message || 'Test-Wecker gesendet ✓');
+  } catch(e) {
+    toast('Test fehlgeschlagen: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false; icon.textContent = '⏰';
+  }
+}
   const card = document.getElementById('timetable-grid-card');
   const grid = document.getElementById('timetable-grid');
   if (!tt || !tt.slots || !tt.slots.length) {
