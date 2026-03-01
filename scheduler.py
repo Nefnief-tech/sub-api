@@ -92,6 +92,36 @@ def _reload_jobs():
             _add_aps_job(job)
 
 
+_CRON_DAY_NAMES = {
+    '0': 'sun', '7': 'sun',
+    '1': 'mon', '2': 'tue', '3': 'wed', '4': 'thu', '5': 'fri', '6': 'sat',
+}
+
+
+def _crontab_dow_to_aps(dow: str) -> str:
+    """Convert crontab day_of_week (0/7=Sun, 1=Mon … 6=Sat) to APScheduler
+    day names (mon,tue,…,sun) so 0=Monday semantics don't shift the days."""
+    if dow == '*':
+        return '*'
+    def _tok(t: str) -> str:
+        return _CRON_DAY_NAMES.get(t, t)  # leave names (mon/tue/…) unchanged
+    parts = []
+    for segment in dow.split(','):
+        if '/' in segment:
+            rng, step = segment.split('/', 1)
+            parts.append(f"{_convert_rng(rng, _tok)}/{step}")
+        else:
+            parts.append(_convert_rng(segment, _tok))
+    return ','.join(parts)
+
+
+def _convert_rng(s: str, conv) -> str:
+    if '-' in s:
+        a, b = s.split('-', 1)
+        return f"{conv(a)}-{conv(b)}"
+    return conv(s)
+
+
 def _add_aps_job(job: dict):
     parts = job["cron"].split()
     if len(parts) != 5:
@@ -101,7 +131,8 @@ def _add_aps_job(job: dict):
     _scheduler.add_job(
         _run_scrape,
         CronTrigger(minute=minute, hour=hour, day=day, month=month,
-                    day_of_week=dow, timezone="Europe/Berlin"),
+                    day_of_week=_crontab_dow_to_aps(dow),
+                    timezone="Europe/Berlin"),
         id=str(job["id"]),
         name=job["name"],
         kwargs={"job_id": job["id"]},
