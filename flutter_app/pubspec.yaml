@@ -1,0 +1,24 @@
+name: vertretungsplan_alarm
+description: Automatic school alarm setter via Gotify notifications
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  web_socket_channel: ^2.4.0
+  shared_preferences: ^2.3.2
+  permission_handler: ^11.3.0
+  flutter_local_notifications: ^17.2.1
+  google_fonts: ^6.2.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
