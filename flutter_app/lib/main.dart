@@ -220,8 +220,24 @@ void main() async {
   runApp(const VertretungsApp());
 }
 
-class VertretungsApp extends StatelessWidget {
+class VertretungsApp extends StatefulWidget {
   const VertretungsApp({super.key});
+  @override State<VertretungsApp> createState() => _VertretungsAppState();
+}
+
+class _VertretungsAppState extends State<VertretungsApp> {
+  AlarmSettings? _ringingAlarm;
+
+  @override
+  void initState() {
+    super.initState();
+    Alarm.ringing.listen((alarmSet) {
+      if (alarmSet.alarms.isNotEmpty) {
+        setState(() => _ringingAlarm = alarmSet.alarms.first);
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -233,7 +249,201 @@ class VertretungsApp extends StatelessWidget {
         textTheme: GoogleFonts.spaceGroteskTextTheme()
             .apply(bodyColor: _text, displayColor: _text),
       ),
-      home: const HomeScreen(),
+      home: _ringingAlarm != null
+          ? RingScreen(
+              alarm: _ringingAlarm!,
+              onDismiss: () => setState(() => _ringingAlarm = null),
+            )
+          : const HomeScreen(),
+    );
+  }
+}
+
+// ── Ring Screen ───────────────────────────────────────────────────────────────
+class RingScreen extends StatefulWidget {
+  final AlarmSettings alarm;
+  final VoidCallback onDismiss;
+  const RingScreen({super.key, required this.alarm, required this.onDismiss});
+  @override State<RingScreen> createState() => _RingScreenState();
+}
+
+class _RingScreenState extends State<RingScreen>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _pulseCtrl;
+  late Animation<double>   _scale;
+  bool _loading = false;
+
+  String get _timeStr {
+    final dt = widget.alarm.dateTime;
+    return '${dt.hour.toString().padLeft(2,'0')}:${dt.minute.toString().padLeft(2,'0')}';
+  }
+
+  String get _label => widget.alarm.notificationSettings.title
+      .replaceAll('⏰ Wecker — ', '').replaceAll(' Uhr', '');
+
+  @override
+  void initState() {
+    super.initState();
+    _pulseCtrl = AnimationController(vsync: this,
+        duration: const Duration(milliseconds: 900))
+      ..repeat(reverse: true);
+    _scale = Tween(begin: 0.92, end: 1.08).animate(
+        CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut));
+  }
+
+  @override
+  void dispose() {
+    _pulseCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _stop() async {
+    setState(() => _loading = true);
+    await Alarm.stop(widget.alarm.id);
+    widget.onDismiss();
+  }
+
+  Future<void> _snooze() async {
+    setState(() => _loading = true);
+    await Alarm.stop(widget.alarm.id);
+    final snoozeTime = DateTime.now().add(const Duration(minutes: 10));
+    await Alarm.set(
+      alarmSettings: widget.alarm.copyWith(
+        dateTime: snoozeTime,
+        notificationSettings: widget.alarm.notificationSettings.copyWith(
+          title: '⏰ Snooze — ${snoozeTime.hour.toString().padLeft(2,'0')}:${snoozeTime.minute.toString().padLeft(2,'0')} Uhr',
+        ),
+      ),
+    );
+    widget.onDismiss();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF060810),
+      body: SafeArea(
+        child: Stack(
+          children: [
+            // Glow background
+            Positioned.fill(
+              child: AnimatedBuilder(
+                animation: _scale,
+                builder: (_, __) => Container(
+                  decoration: BoxDecoration(
+                    gradient: RadialGradient(
+                      center: const Alignment(0, -0.2),
+                      radius: 1.4 * _scale.value,
+                      colors: const [
+                        Color(0x3322D1A5),
+                        Color(0x00060810),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
+            Column(
+              children: [
+                const Spacer(flex: 2),
+
+                // Clock icon pulsing
+                AnimatedBuilder(
+                  animation: _scale,
+                  builder: (_, __) => Transform.scale(
+                    scale: _scale.value,
+                    child: Container(
+                      width: 120, height: 120,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        border: Border.all(color: _accent, width: 2),
+                        color: _accentDim,
+                      ),
+                      child: const Icon(Icons.alarm, size: 56, color: _accent),
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 32),
+
+                // Time
+                Text(
+                  _timeStr,
+                  style: GoogleFonts.spaceGrotesk(
+                    fontSize: 80,
+                    fontWeight: FontWeight.w800,
+                    color: _text,
+                    letterSpacing: -4,
+                  ),
+                ),
+
+                const SizedBox(height: 8),
+
+                // Label from notification
+                Text(
+                  widget.alarm.notificationSettings.body,
+                  style: GoogleFonts.spaceGrotesk(
+                    fontSize: 15,
+                    color: _muted,
+                    fontWeight: FontWeight.w500,
+                  ),
+                  textAlign: TextAlign.center,
+                  maxLines: 2,
+                ),
+
+                const Spacer(flex: 3),
+
+                // Snooze button
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 32),
+                  child: SizedBox(
+                    width: double.infinity,
+                    height: 56,
+                    child: OutlinedButton.icon(
+                      onPressed: _loading ? null : _snooze,
+                      icon: const Icon(Icons.snooze, color: _accent),
+                      label: Text('Snooze (10 min)',
+                          style: GoogleFonts.spaceGrotesk(
+                              color: _accent, fontWeight: FontWeight.w600, fontSize: 16)),
+                      style: OutlinedButton.styleFrom(
+                        side: const BorderSide(color: _accent, width: 1.5),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14)),
+                      ),
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 16),
+
+                // Stop button
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 32),
+                  child: SizedBox(
+                    width: double.infinity,
+                    height: 56,
+                    child: ElevatedButton.icon(
+                      onPressed: _loading ? null : _stop,
+                      icon: const Icon(Icons.alarm_off, color: Colors.white),
+                      label: Text('Alarm stoppen',
+                          style: GoogleFonts.spaceGrotesk(
+                              color: Colors.white, fontWeight: FontWeight.w700, fontSize: 16)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: _red,
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14)),
+                      ),
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 48),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
