@@ -1,0 +1,1165 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vertretungsplan · Ops Console</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;1,300&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+  <style>
+    /* ── Variables ───────────────────────────────────────────── */
+    :root {
+      --bg:        #060912;
+      --bg1:       #0c1020;
+      --bg2:       #111827;
+      --card:      rgba(255,255,255,0.025);
+      --border:    rgba(255,255,255,0.06);
+      --border-hi: rgba(0,212,255,0.3);
+      --text:      #e2e8f0;
+      --muted:     #64748b;
+      --cyan:      #00d4ff;
+      --cyan-dim:  rgba(0,212,255,0.12);
+      --orange:    #ff6b35;
+      --orange-dim:rgba(255,107,53,0.12);
+      --green:     #22d3a5;
+      --green-dim: rgba(34,211,165,0.12);
+      --red:       #f43f5e;
+      --red-dim:   rgba(244,63,94,0.12);
+      --yellow:    #fbbf24;
+      --radius:    10px;
+      --font-head: 'Syne', sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+      --font-body: 'DM Sans', sans-serif;
+    }
+
+    /* ── Reset & Base ────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: var(--font-body);
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      font-size: 14px;
+      line-height: 1.6;
+      overflow-x: hidden;
+    }
+
+    /* Dot-grid background */
+    body::before {
+      content: '';
+      position: fixed; inset: 0; z-index: 0;
+      background-image: radial-gradient(rgba(0,212,255,0.06) 1px, transparent 1px);
+      background-size: 28px 28px;
+      pointer-events: none;
+    }
+    /* Gradient vignette */
+    body::after {
+      content: '';
+      position: fixed; inset: 0; z-index: 0;
+      background: radial-gradient(ellipse at 50% 0%, rgba(0,80,140,0.15) 0%, transparent 65%),
+                  radial-gradient(ellipse at 90% 90%, rgba(255,107,53,0.06) 0%, transparent 50%);
+      pointer-events: none;
+    }
+
+    /* ── Layout ──────────────────────────────────────────────── */
+    #app {
+      position: relative; z-index: 1;
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 0 20px 80px;
+    }
+
+    /* ── Header ──────────────────────────────────────────────── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 28px 0 22px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 28px;
+      gap: 16px;
+    }
+    .brand {
+      display: flex; align-items: center; gap: 14px;
+    }
+    .brand-icon {
+      width: 38px; height: 38px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, var(--cyan) 0%, #005aff 100%);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 19px;
+      box-shadow: 0 0 20px rgba(0,212,255,0.35);
+      flex-shrink: 0;
+    }
+    .brand-text h1 {
+      font-family: var(--font-head);
+      font-size: 18px;
+      font-weight: 800;
+      letter-spacing: -0.3px;
+      line-height: 1.15;
+      color: #fff;
+    }
+    .brand-text span {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--muted);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    #clock {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--muted);
+      text-align: right;
+      line-height: 1.8;
+    }
+    #clock strong { color: var(--cyan); font-weight: 400; }
+
+    /* ── Status badge ────────────────────────────────────────── */
+    .status-bar {
+      display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 24px;
+    }
+    .badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 10px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--muted);
+      letter-spacing: 0.04em;
+    }
+    .badge .dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--muted);
+    }
+    .badge.ok .dot { background: var(--green); box-shadow: 0 0 6px var(--green); animation: pulse-dot 2.5s infinite; }
+    .badge.warn .dot { background: var(--orange); }
+    .badge.err .dot { background: var(--red); }
+    @keyframes pulse-dot {
+      0%,100% { opacity: 1; } 50% { opacity: 0.4; }
+    }
+
+    /* ── Tabs ────────────────────────────────────────────────── */
+    .tabs {
+      display: flex; gap: 2px;
+      background: var(--bg1);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 4px;
+      margin-bottom: 28px;
+    }
+    .tab-btn {
+      flex: 1;
+      background: none;
+      border: none; outline: none;
+      color: var(--muted);
+      font-family: var(--font-head);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      padding: 8px 12px;
+      border-radius: 7px;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex; align-items: center; justify-content: center; gap: 7px;
+    }
+    .tab-btn:hover { color: var(--text); background: rgba(255,255,255,0.04); }
+    .tab-btn.active {
+      background: var(--cyan-dim);
+      color: var(--cyan);
+      border: 1px solid var(--border-hi);
+    }
+    .tab-btn .tab-icon { font-size: 14px; }
+
+    /* ── Panels ──────────────────────────────────────────────── */
+    .panel { display: none; }
+    .panel.active { display: block; animation: fade-in 0.25s ease; }
+    @keyframes fade-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+    /* ── Card ────────────────────────────────────────────────── */
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      margin-bottom: 20px;
+    }
+    .card-title {
+      font-family: var(--font-head);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--cyan);
+      margin-bottom: 20px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .card-title .sep {
+      flex: 1;
+      height: 1px;
+      background: linear-gradient(to right, var(--border-hi), transparent);
+    }
+
+    /* ── Form fields ─────────────────────────────────────────── */
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .form-grid .full { grid-column: 1 / -1; }
+    .field { display: flex; flex-direction: column; gap: 6px; }
+    label {
+      font-size: 11px; font-weight: 500;
+      color: var(--muted);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    input[type="text"], input[type="email"], input[type="password"], input[type="url"] {
+      background: var(--bg1);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      color: var(--text);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      padding: 9px 12px;
+      width: 100%;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    input:focus {
+      border-color: var(--border-hi);
+      box-shadow: 0 0 0 3px rgba(0,212,255,0.07);
+    }
+    input::placeholder { color: var(--muted); opacity: 0.6; }
+
+    /* Toggle switch */
+    .toggle-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 14px;
+      background: var(--bg1);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+    }
+    .toggle-label { font-size: 13px; color: var(--text); }
+    .toggle-desc { font-size: 11px; color: var(--muted); }
+    .toggle {
+      width: 40px; height: 22px;
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 11px;
+      position: relative; cursor: pointer;
+      transition: background 0.2s, border-color 0.2s;
+      flex-shrink: 0;
+    }
+    .toggle::after {
+      content: '';
+      position: absolute; top: 3px; left: 3px;
+      width: 14px; height: 14px;
+      background: var(--muted);
+      border-radius: 50%;
+      transition: transform 0.2s, background 0.2s;
+    }
+    .toggle.on { background: var(--cyan-dim); border-color: var(--border-hi); }
+    .toggle.on::after { transform: translateX(18px); background: var(--cyan); box-shadow: 0 0 8px var(--cyan); }
+
+    /* ── Buttons ─────────────────────────────────────────────── */
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 9px 18px;
+      border: none; border-radius: 7px;
+      font-family: var(--font-head);
+      font-size: 12px; font-weight: 700;
+      letter-spacing: 0.06em; text-transform: uppercase;
+      cursor: pointer; transition: all 0.2s;
+      outline: none;
+    }
+    .btn-primary {
+      background: var(--cyan);
+      color: #000;
+      box-shadow: 0 0 18px rgba(0,212,255,0.25);
+    }
+    .btn-primary:hover { background: #1de9ff; box-shadow: 0 0 28px rgba(0,212,255,0.45); transform: translateY(-1px); }
+    .btn-primary:active { transform: none; }
+    .btn-ghost {
+      background: var(--card);
+      color: var(--muted);
+      border: 1px solid var(--border);
+    }
+    .btn-ghost:hover { color: var(--text); border-color: rgba(255,255,255,0.15); }
+    .btn-danger {
+      background: var(--red-dim);
+      color: var(--red);
+      border: 1px solid rgba(244,63,94,0.2);
+    }
+    .btn-danger:hover { background: rgba(244,63,94,0.2); }
+    .btn-sm { padding: 5px 12px; font-size: 10px; }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none !important; }
+
+    /* Form actions */
+    .form-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+
+    /* ── Big Run Button ──────────────────────────────────────── */
+    .run-section {
+      display: flex; flex-direction: column; align-items: center;
+      gap: 18px; padding: 36px 24px;
+    }
+    #runBtn {
+      position: relative;
+      padding: 16px 44px;
+      font-size: 14px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, #00d4ff 0%, #0066ff 100%);
+      color: #000;
+      font-family: var(--font-head);
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      box-shadow: 0 0 0 0 rgba(0,212,255,0.4);
+      transition: all 0.25s;
+    }
+    #runBtn::before {
+      content: '';
+      position: absolute; inset: -3px;
+      border-radius: 15px;
+      background: linear-gradient(135deg, #00d4ff, #0066ff);
+      z-index: -1; opacity: 0;
+      filter: blur(12px);
+      transition: opacity 0.25s;
+    }
+    #runBtn:hover:not(:disabled)::before { opacity: 0.5; }
+    #runBtn:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 8px 32px rgba(0,212,255,0.4); }
+    #runBtn.loading {
+      background: var(--bg2);
+      color: var(--cyan);
+      border: 1px solid var(--border-hi);
+      box-shadow: none;
+    }
+    #runBtn.success { background: linear-gradient(135deg, #22d3a5 0%, #059669 100%); }
+    #runBtn.error { background: linear-gradient(135deg, #f43f5e 0%, #991b1b 100%); color: #fff; }
+    #runStatus {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--muted);
+      text-align: center;
+      min-height: 20px;
+      max-width: 420px;
+    }
+    #runStatus.ok { color: var(--green); }
+    #runStatus.err { color: var(--red); }
+
+    /* Spinner */
+    .spin {
+      display: inline-block;
+      width: 14px; height: 14px;
+      border: 2px solid currentColor;
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Cron Jobs ───────────────────────────────────────────── */
+    .jobs-list { display: flex; flex-direction: column; gap: 10px; }
+    .job-item {
+      display: flex; align-items: center; gap: 12px;
+      padding: 12px 16px;
+      background: var(--bg1);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      transition: border-color 0.2s;
+    }
+    .job-item:hover { border-color: rgba(255,255,255,0.1); }
+    .job-item.disabled { opacity: 0.45; }
+    .job-name {
+      font-family: var(--font-head);
+      font-weight: 600; font-size: 13px;
+      flex: 1;
+    }
+    .job-cron {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--cyan);
+      background: var(--cyan-dim);
+      border: 1px solid var(--border-hi);
+      border-radius: 5px;
+      padding: 2px 8px;
+      white-space: nowrap;
+    }
+    .job-actions { display: flex; align-items: center; gap: 8px; }
+    .job-empty {
+      text-align: center; padding: 32px;
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+
+    /* Add job form */
+    .add-job-form {
+      display: grid; grid-template-columns: 1fr 1fr auto;
+      gap: 10px; align-items: end;
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border);
+    }
+    .cron-presets {
+      grid-column: 1 / -1;
+      display: flex; gap: 6px; flex-wrap: wrap;
+    }
+    .preset-btn {
+      background: var(--bg1);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      padding: 4px 10px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .preset-btn:hover { color: var(--cyan); border-color: var(--border-hi); background: var(--cyan-dim); }
+
+    /* ── Logs ────────────────────────────────────────────────── */
+    .log-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 14px;
+    }
+    .log-stream {
+      background: var(--bg1);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      max-height: 480px;
+      overflow-y: auto;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      line-height: 1.8;
+    }
+    .log-stream::-webkit-scrollbar { width: 4px; }
+    .log-stream::-webkit-scrollbar-track { background: transparent; }
+    .log-stream::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+    .log-entry { display: flex; gap: 12px; padding: 3px 0; border-bottom: 1px solid rgba(255,255,255,0.03); }
+    .log-entry:last-child { border-bottom: none; }
+    .log-time { color: var(--muted); white-space: nowrap; flex-shrink: 0; }
+    .log-status { flex-shrink: 0; width: 54px; text-align: center; border-radius: 3px; padding: 0 4px; }
+    .log-status.success { color: var(--green); background: var(--green-dim); }
+    .log-status.error   { color: var(--red);   background: var(--red-dim);   }
+    .log-msg { color: var(--text); word-break: break-word; }
+    .log-empty { text-align: center; color: var(--muted); padding: 32px; }
+    .live-dot {
+      display: inline-block; width: 6px; height: 6px;
+      border-radius: 50%; background: var(--green);
+      animation: pulse-dot 2s infinite;
+      margin-right: 6px;
+    }
+
+    /* ── Timetable grid ──────────────────────────────────── */
+    .tt-table { border-collapse: collapse; width: 100%; font-size: 11px; }
+    .tt-table th, .tt-table td {
+      border: 1px solid var(--border); padding: 5px 8px; text-align: center;
+    }
+    .tt-table th { background: var(--bg); color: var(--cyan); font-weight: 600; }
+    .tt-table td { background: var(--bg2); }
+    .tt-cell-full { color: var(--text); }
+    .tt-cell-full .tt-subj { font-weight: 600; color: var(--accent); }
+    .tt-cell-full .tt-room { font-size: 10px; color: var(--muted); margin-top: 2px; }
+    .tt-cell-empty { color: var(--muted); opacity: 0.3; }
+    .tt-slot { color: var(--muted); font-size: 10px; white-space: nowrap; }
+
+    /* ── Toast ───────────────────────────────────────────── */
+    #toast-container {
+      position: fixed; bottom: 28px; right: 28px;
+      display: flex; flex-direction: column; gap: 10px;
+      z-index: 9999;
+    }
+    .toast {
+      display: flex; align-items: center; gap: 10px;
+      padding: 12px 18px;
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font-size: 13px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+      animation: slide-up 0.25s ease;
+      max-width: 340px;
+    }
+    .toast.ok { border-color: rgba(34,211,165,0.3); }
+    .toast.err { border-color: rgba(244,63,94,0.3); }
+    .toast .toast-icon { font-size: 16px; }
+    @keyframes slide-up { from { opacity:0; transform: translateY(12px); } to { opacity:1; transform: none; } }
+    @keyframes slide-out { to { opacity:0; transform: translateX(12px); } }
+
+    /* ── Misc ────────────────────────────────────────────────── */
+    .separator { height: 1px; background: var(--border); margin: 20px 0; }
+    .text-muted { color: var(--muted); font-size: 12px; }
+    .help-text { font-size: 11px; color: var(--muted); margin-top: 4px; line-height: 1.5; }
+
+    @media (max-width: 580px) {
+      .form-grid { grid-template-columns: 1fr; }
+      .add-job-form { grid-template-columns: 1fr; }
+      .tabs { gap: 1px; }
+      .tab-btn { font-size: 10px; padding: 7px 6px; }
+    }
+  </style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ── Header ── -->
+  <header>
+    <div class="brand">
+      <div class="brand-icon">📚</div>
+      <div class="brand-text">
+        <h1>Vertretungsplan</h1>
+        <span>Ops Console · Eltern-Portal</span>
+      </div>
+    </div>
+    <div id="clock"></div>
+  </header>
+
+  <!-- ── Status Bar ── -->
+  <div class="status-bar">
+    <div class="badge" id="badge-cfg">
+      <div class="dot warn"></div>
+      <span>Konfiguration ausstehend</span>
+    </div>
+    <div class="badge" id="badge-jobs">
+      <div class="dot"></div>
+      <span id="badge-jobs-text">0 Cronjobs aktiv</span>
+    </div>
+    <div class="badge" id="badge-last">
+      <div class="dot"></div>
+      <span id="badge-last-text">Noch nicht ausgeführt</span>
+    </div>
+  </div>
+
+  <!-- ── Tabs ── -->
+  <nav class="tabs">
+    <button class="tab-btn active" data-tab="settings">
+      <span class="tab-icon">⚙️</span> Einstellungen
+    </button>
+    <button class="tab-btn" data-tab="jobs">
+      <span class="tab-icon">🕐</span> Cronjobs
+    </button>
+    <button class="tab-btn" data-tab="run">
+      <span class="tab-icon">🚀</span> Ausführen
+    </button>
+    <button class="tab-btn" data-tab="logs">
+      <span class="tab-icon">📋</span> Logs
+    </button>
+    <button class="tab-btn" data-tab="timetable">
+      <span class="tab-icon">📅</span> Stundenplan
+    </button>
+  </nav>
+
+  <!-- ═══════════════ PANEL: Settings ═══════════════ -->
+  <div class="panel active" id="panel-settings">
+
+    <div class="card">
+      <div class="card-title">🏫 Portal-Zugang <div class="sep"></div></div>
+      <div class="form-grid">
+        <div class="field full">
+          <label>Base URL</label>
+          <input type="url" id="s-baseurl" placeholder="https://eltern-portal.beispielschule.de">
+          <div class="help-text">URL des Eltern-Portals ohne abschließenden Slash</div>
+        </div>
+        <div class="field">
+          <label>E-Mail Adresse</label>
+          <input type="email" id="s-username" placeholder="name@beispiel.de">
+        </div>
+        <div class="field">
+          <label>Passwort</label>
+          <input type="password" id="s-password" placeholder="••••••••">
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">🔔 Discord Webhook <div class="sep"></div></div>
+      <div class="form-grid">
+        <div class="field full">
+          <label>Webhook URL</label>
+          <input type="url" id="s-webhook" placeholder="https://discord.com/api/webhooks/...">
+          <div class="help-text">Discord → Kanaleinstellungen → Integrationen → Webhooks</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">🟣 Gotify <div class="sep"></div></div>
+      <div class="form-grid">
+        <div class="field full">
+          <label>Server URL</label>
+          <input type="url" id="s-gotify-url" placeholder="https://gotify.beispiel.de">
+          <div class="help-text">URL deines Gotify-Servers ohne abschließenden Slash</div>
+        </div>
+        <div class="field">
+          <label>App Token</label>
+          <input type="password" id="s-gotify-token" placeholder="••••••••••••••••">
+          <div class="help-text">Gotify → Apps → Token</div>
+        </div>
+        <div class="field">
+          <label>Priorität (1–10)</label>
+          <input type="text" id="s-gotify-priority" placeholder="5">
+          <div class="help-text">5 = normal, 8 = hoch</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">⚙️ Benachrichtigungen <div class="sep"></div></div>
+      <div class="toggle-row">
+        <div>
+          <div class="toggle-label">Leere Tage melden</div>
+          <div class="toggle-desc">Nachricht senden auch wenn keine Vertretungen vorhanden</div>
+        </div>
+        <div class="toggle" id="t-notify-empty" onclick="toggleSwitch(this)"></div>
+      </div>
+      <div class="toggle-row" style="margin-top:10px;">
+        <div>
+          <div class="toggle-label">⏰ Stunden-Erinnerungen</div>
+          <div class="toggle-desc">Gotify-Notification 5 Minuten vor jeder Stunde (benötigt Stundenplan-Sync)</div>
+        </div>
+        <div class="toggle" id="t-reminders-enabled" onclick="toggleSwitch(this)"></div>
+      </div>
+      <div class="form-grid" style="margin-top:10px;">
+        <div class="field">
+          <label>Erinnerungs-Priorität (1–10)</label>
+          <input type="text" id="s-reminder-priority" placeholder="7">
+          <div class="help-text">7 = hoch, 10 = kritisch</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="form-actions">
+      <button class="btn btn-ghost" onclick="loadSettings()">↩ Zurücksetzen</button>
+      <button class="btn btn-primary" onclick="saveSettings()">💾 Speichern</button>
+    </div>
+
+  </div>
+
+  <!-- ═══════════════ PANEL: Jobs ═══════════════ -->
+  <div class="panel" id="panel-jobs">
+    <div class="card">
+      <div class="card-title">🕐 Geplante Ausführungen <div class="sep"></div></div>
+
+      <div class="jobs-list" id="jobs-list">
+        <div class="job-empty">Keine Cronjobs konfiguriert</div>
+      </div>
+
+      <!-- Add Job Form -->
+      <div class="add-job-form">
+        <div class="cron-presets">
+          <span class="text-muted" style="font-size:11px; align-self:center; margin-right:4px;">Vorlagen:</span>
+          <button class="preset-btn" onclick="setCron('0 7 * * 1-5')">Mo–Fr 07:00</button>
+          <button class="preset-btn" onclick="setCron('0 6 * * 1-5')">Mo–Fr 06:00</button>
+          <button class="preset-btn" onclick="setCron('30 6 * * 1-5')">Mo–Fr 06:30</button>
+          <button class="preset-btn" onclick="setCron('0 7 * * 1')">Mo 07:00</button>
+          <button class="preset-btn" onclick="setCron('0 18 * * 0')">So 18:00</button>
+          <button class="preset-btn" onclick="setCron('*/30 7-15 * * 1-5')">Alle 30min (7–15h)</button>
+        </div>
+        <div class="field">
+          <label>Name</label>
+          <input type="text" id="j-name" placeholder="Morgen-Check">
+        </div>
+        <div class="field">
+          <label>Cron (min h d m wd)</label>
+          <input type="text" id="j-cron" placeholder="0 7 * * 1-5">
+        </div>
+        <button class="btn btn-primary" onclick="addJob()">+ Hinzufügen</button>
+      </div>
+
+      <div class="help-text" style="margin-top:10px;">
+        Cron-Format: <code style="color:var(--cyan)">Minute Stunde Tag Monat Wochentag</code>
+        — Wochentage: 0=So, 1=Mo … 5=Fr, 6=Sa
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ PANEL: Run ═══════════════ -->
+  <div class="panel" id="panel-run">
+    <div class="card">
+      <div class="card-title">🚀 Manuell Ausführen <div class="sep"></div></div>
+      <div class="run-section">
+        <button id="runBtn" class="btn" onclick="runScrape()">
+          <span id="runBtnIcon">▶</span>
+          <span id="runBtnLabel">Jetzt Scrapen & Senden</span>
+        </button>
+        <div id="runStatus">Bereit — Vertretungsplan abrufen und Discord-Nachricht senden</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">📊 Letzter Abruf <div class="sep"></div></div>
+      <div id="last-result" style="font-family:var(--font-mono); font-size:12px; color:var(--muted); text-align:center; padding:16px;">
+        Noch kein Abruf in dieser Sitzung
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ PANEL: Logs ═══════════════ -->
+  <div class="panel" id="panel-logs">
+    <div class="card">
+      <div class="log-header">
+        <div class="card-title" style="margin:0;">
+          <span class="live-dot"></span>Live Log Stream <div class="sep"></div>
+        </div>
+        <button class="btn btn-ghost btn-sm" onclick="loadLogs()">⟳ Aktualisieren</button>
+      </div>
+      <div class="log-stream" id="log-stream">
+        <div class="log-empty">Keine Einträge</div>
+      </div>
+    </div>
+  </div>
+  <!-- ═══════════════ PANEL: Stundenplan ═══════════════ -->
+  <div class="panel" id="panel-timetable">
+    <div class="card">
+      <div class="card-title">📅 Stundenplan Sync <div class="sep"></div></div>
+      <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+        <button class="btn btn-primary" onclick="syncTimetable()" id="syncBtn">
+          <span id="syncBtnIcon">🔄</span> Jetzt synchronisieren
+        </button>
+        <button class="btn btn-ghost" onclick="testReminder()" id="testReminderBtn">
+          <span id="testReminderIcon">🔔</span> Test-Erinnerung senden
+        </button>
+        <div id="sync-status" style="font-size:12px; color:var(--muted);">
+          Noch nicht synchronisiert
+        </div>
+      </div>
+      <div class="help-text" style="margin-top:10px;">
+        Stundenplan wird automatisch jeden Sonntag um 18:00 Uhr aktualisiert. Erinnerungen werden dann neu geplant.
+      </div>
+    </div>
+
+    <div class="card" id="reminder-jobs-card" style="display:none;">
+      <div class="card-title">⏰ Aktive Erinnerungen <div class="sep"></div></div>
+      <div id="reminder-jobs-list" style="font-family:var(--font-mono); font-size:12px;"></div>
+    </div>
+
+    <div class="card" id="timetable-grid-card" style="display:none;">
+      <div class="card-title">🗓 Stundenplan <div class="sep"></div></div>
+      <div id="timetable-grid" style="overflow-x:auto;"></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── Toast Container ── -->
+<div id="toast-container"></div>
+
+<script>
+// ── Clock ──────────────────────────────────────────────────────────────────
+(function tickClock() {
+  const el = document.getElementById('clock');
+  const update = () => {
+    const now = new Date();
+    const d = now.toLocaleDateString('de-DE', { weekday:'short', day:'2-digit', month:'2-digit', year:'numeric' });
+    const t = now.toLocaleTimeString('de-DE');
+    el.innerHTML = `<strong>${t}</strong><br>${d}`;
+  };
+  update(); setInterval(update, 1000);
+})();
+
+// ── Tabs ───────────────────────────────────────────────────────────────────
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('panel-' + btn.dataset.tab).classList.add('active');
+    if (btn.dataset.tab === 'logs') loadLogs();
+    if (btn.dataset.tab === 'jobs') loadJobs();
+    if (btn.dataset.tab === 'timetable') loadTimetable();
+  });
+});
+
+// ── Toggle ─────────────────────────────────────────────────────────────────
+function toggleSwitch(el) { el.classList.toggle('on'); }
+
+// ── Toast ──────────────────────────────────────────────────────────────────
+function toast(msg, type = 'ok') {
+  const c = document.getElementById('toast-container');
+  const t = document.createElement('div');
+  t.className = `toast ${type}`;
+  t.innerHTML = `<span class="toast-icon">${type === 'ok' ? '✅' : '❌'}</span><span>${msg}</span>`;
+  c.appendChild(t);
+  setTimeout(() => {
+    t.style.animation = 'slide-out 0.25s forwards';
+    setTimeout(() => t.remove(), 260);
+  }, 3500);
+}
+
+// ── Settings ───────────────────────────────────────────────────────────────
+async function loadSettings() {
+  try {
+    const r = await fetch('/api/settings');
+    const s = await r.json();
+    document.getElementById('s-baseurl').value        = s.base_url         || '';
+    document.getElementById('s-username').value       = s.username         || '';
+    document.getElementById('s-password').value       = s.password         || '';
+    document.getElementById('s-webhook').value        = s.webhook_url      || '';
+    document.getElementById('s-gotify-url').value     = s.gotify_url       || '';
+    document.getElementById('s-gotify-token').value   = s.gotify_token     || '';
+    document.getElementById('s-gotify-priority').value= s.gotify_priority  || '5';
+    document.getElementById('s-reminder-priority').value = s.reminder_priority || '7';
+    const tog = document.getElementById('t-notify-empty');
+    tog.classList.toggle('on', s.notify_empty === 'true');
+    const togR = document.getElementById('t-reminders-enabled');
+    togR.classList.toggle('on', s.reminders_enabled === 'true');
+    updateConfigBadge(s);
+  } catch(e) { toast('Einstellungen konnten nicht geladen werden', 'err'); }
+}
+
+async function saveSettings() {
+  const data = {
+    base_url:          document.getElementById('s-baseurl').value.trim(),
+    username:          document.getElementById('s-username').value.trim(),
+    password:          document.getElementById('s-password').value,
+    webhook_url:       document.getElementById('s-webhook').value.trim(),
+    gotify_url:        document.getElementById('s-gotify-url').value.trim(),
+    gotify_token:      document.getElementById('s-gotify-token').value,
+    gotify_priority:   document.getElementById('s-gotify-priority').value.trim() || '5',
+    notify_empty:      document.getElementById('t-notify-empty').classList.contains('on') ? 'true' : 'false',
+    reminders_enabled: document.getElementById('t-reminders-enabled').classList.contains('on') ? 'true' : 'false',
+    reminder_priority: document.getElementById('s-reminder-priority').value.trim() || '7',
+  };
+  try {
+    const r = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    if (!r.ok) throw new Error(await r.text());
+    toast('Einstellungen gespeichert ✓');
+    updateConfigBadge(data);
+  } catch(e) { toast('Fehler beim Speichern: ' + e.message, 'err'); }
+}
+
+function updateConfigBadge(s) {
+  const badge = document.getElementById('badge-cfg');
+  const dot   = badge.querySelector('.dot');
+  const hasPortal  = s.base_url && s.username && (s.password || s.password === '••••••••');
+  const hasDiscord = !!s.webhook_url;
+  const hasGotify  = !!(s.gotify_url && s.gotify_token);
+  if (hasPortal && (hasDiscord || hasGotify)) {
+    const channels = [hasDiscord && 'Discord', hasGotify && 'Gotify'].filter(Boolean).join(' + ');
+    badge.querySelector('span').textContent = `Konfiguriert · ${channels}`;
+    dot.className = 'dot ok';
+  } else {
+    badge.querySelector('span').textContent = 'Konfiguration ausstehend';
+    dot.className = 'dot warn';
+  }
+}
+
+// ── Jobs ───────────────────────────────────────────────────────────────────
+async function loadJobs() {
+  try {
+    const r = await fetch('/api/jobs');
+    const jobs = await r.json();
+    renderJobs(jobs);
+    const active = jobs.filter(j => j.enabled).length;
+    document.getElementById('badge-jobs-text').textContent =
+      `${active} Cronjob${active !== 1 ? 's' : ''} aktiv`;
+    document.getElementById('badge-jobs').querySelector('.dot').className =
+      'dot ' + (active > 0 ? 'ok' : '');
+  } catch(e) { toast('Cronjobs konnten nicht geladen werden', 'err'); }
+}
+
+function renderJobs(jobs) {
+  const list = document.getElementById('jobs-list');
+  if (!jobs.length) {
+    list.innerHTML = '<div class="job-empty">Keine Cronjobs konfiguriert</div>';
+    return;
+  }
+  list.innerHTML = jobs.map(j => `
+    <div class="job-item ${j.enabled ? '' : 'disabled'}" id="job-${j.id}">
+      <div class="job-name">${escHtml(j.name)}</div>
+      <div class="job-cron">${escHtml(j.cron)}</div>
+      <div class="job-actions">
+        <div class="toggle ${j.enabled ? 'on' : ''}" onclick="toggleJob(${j.id}, this)"></div>
+        <button class="btn btn-danger btn-sm" onclick="deleteJob(${j.id})">✕</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function toggleJob(id, toggleEl) {
+  const enable = !toggleEl.classList.contains('on');
+  try {
+    await fetch(`/api/jobs/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: enable })
+    });
+    loadJobs();
+  } catch(e) { toast('Fehler: ' + e.message, 'err'); }
+}
+
+async function deleteJob(id) {
+  if (!confirm('Cronjob löschen?')) return;
+  try {
+    await fetch(`/api/jobs/${id}`, { method: 'DELETE' });
+    loadJobs();
+    toast('Cronjob gelöscht');
+  } catch(e) { toast('Fehler: ' + e.message, 'err'); }
+}
+
+async function addJob() {
+  const name = document.getElementById('j-name').value.trim();
+  const cron = document.getElementById('j-cron').value.trim();
+  if (!name || !cron) { toast('Name und Cron-Ausdruck erforderlich', 'err'); return; }
+  try {
+    const r = await fetch('/api/jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, cron })
+    });
+    if (!r.ok) { const e = await r.json(); throw new Error(e.detail); }
+    document.getElementById('j-name').value = '';
+    document.getElementById('j-cron').value = '';
+    loadJobs();
+    toast(`Cronjob "${name}" erstellt`);
+  } catch(e) { toast('Fehler: ' + e.message, 'err'); }
+}
+
+function setCron(val) { document.getElementById('j-cron').value = val; }
+
+// ── Manual Run ─────────────────────────────────────────────────────────────
+async function runScrape() {
+  const btn    = document.getElementById('runBtn');
+  const icon   = document.getElementById('runBtnIcon');
+  const label  = document.getElementById('runBtnLabel');
+  const status = document.getElementById('runStatus');
+  const result = document.getElementById('last-result');
+
+  btn.disabled = true;
+  btn.className = 'btn loading';
+  icon.innerHTML = '<span class="spin"></span>';
+  label.textContent = 'Scraping läuft…';
+  status.textContent = 'Verbinde mit Eltern-Portal…';
+  status.className = '';
+
+  try {
+    const r  = await fetch('/api/scrape/run', { method: 'POST' });
+    const d  = await r.json();
+    if (!r.ok) throw new Error(d.detail || 'Unbekannter Fehler');
+
+    btn.className = 'btn success';
+    icon.textContent = '✓';
+    label.textContent = 'Erfolgreich!';
+    status.textContent = d.message;
+    status.className = 'ok';
+    toast('Discord-Nachricht gesendet ✓');
+
+    // Render plan preview
+    if (d.plan) renderPlanPreview(d.plan, result);
+
+    // Reset after 3s
+    setTimeout(() => {
+      btn.disabled = false;
+      btn.className = 'btn';
+      icon.textContent = '▶';
+      label.textContent = 'Jetzt Scrapen & Senden';
+      status.textContent = 'Bereit — Vertretungsplan abrufen und Discord-Nachricht senden';
+      status.className = '';
+    }, 3000);
+
+  } catch(e) {
+    btn.className = 'btn error';
+    icon.textContent = '✕';
+    label.textContent = 'Fehler!';
+    status.textContent = e.message;
+    status.className = 'err';
+    toast('Fehler: ' + e.message, 'err');
+
+    setTimeout(() => {
+      btn.disabled = false;
+      btn.className = 'btn';
+      icon.textContent = '▶';
+      label.textContent = 'Jetzt Scrapen & Senden';
+      status.textContent = 'Bereit';
+      status.className = '';
+    }, 4000);
+  }
+
+  // Refresh last-run badge
+  updateLastRunBadge();
+}
+
+function renderPlanPreview(plan, el) {
+  const days = plan.days || [];
+  const total = days.reduce((n,d) => n + d.entries.filter(e=>!e.empty).length, 0);
+
+  let html = `<div style="color:var(--text); margin-bottom:12px;">
+    <strong style="color:var(--cyan)">Klasse ${escHtml(plan.class_name)}</strong>
+    &nbsp;·&nbsp;
+    <span style="color:${total>0?'var(--orange)':'var(--green)'}">
+      ${total > 0 ? `${total} Vertretung(en)` : 'Keine Vertretungen'}
+    </span>
+  </div>`;
+
+  for (const day of days) {
+    const hasChanges = day.entries.some(e => !e.empty);
+    html += `<div style="margin-bottom:10px;">
+      <div style="color:var(--muted); font-size:10px; letter-spacing:0.08em; text-transform:uppercase; margin-bottom:4px;">${escHtml(day.date)}</div>`;
+    if (!hasChanges) {
+      html += `<span style="color:var(--green)">✅ Keine Vertretungen</span>`;
+    } else {
+      for (const e of day.entries) {
+        if (e.empty) continue;
+        html += `<div style="display:flex;gap:10px;padding:4px 8px;background:var(--bg2);border-radius:5px;margin-bottom:4px;border-left:2px solid var(--orange);">
+          <span style="color:var(--orange); white-space:nowrap;">${escHtml(e.period)}. Std</span>
+          <span style="color:var(--cyan)">${escHtml(e.subject)}</span>
+          <span style="color:var(--muted)">Raum ${escHtml(e.room)}</span>
+          <span style="color:var(--text); flex:1">${escHtml(e.info)}</span>
+        </div>`;
+      }
+    }
+    html += `</div>`;
+  }
+  el.innerHTML = html;
+}
+
+// ── Logs ───────────────────────────────────────────────────────────────────
+async function loadLogs() {
+  try {
+    const r = await fetch('/api/logs?limit=80');
+    const logs = await r.json();
+    const stream = document.getElementById('log-stream');
+    if (!logs.length) { stream.innerHTML = '<div class="log-empty">Keine Log-Einträge vorhanden</div>'; return; }
+    stream.innerHTML = logs.map(l => `
+      <div class="log-entry">
+        <span class="log-time">${formatTime(l.created_at)}</span>
+        <span class="log-status ${l.status}">${l.status}</span>
+        <span class="log-msg">${escHtml(l.message)}</span>
+      </div>
+    `).join('');
+
+    updateLastRunBadge(logs[0]);
+  } catch(e) { /* silent */ }
+}
+
+function updateLastRunBadge(log) {
+  const badge = document.getElementById('badge-last');
+  if (!log) return;
+  const dot = badge.querySelector('.dot');
+  document.getElementById('badge-last-text').textContent =
+    `Letzter Lauf: ${formatTime(log.created_at)}`;
+  dot.className = 'dot ' + (log.status === 'success' ? 'ok' : 'err');
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+function escHtml(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function formatTime(iso) {
+  if (!iso) return '–';
+  const d = new Date(iso.includes('T') ? iso : iso + 'Z');
+  return d.toLocaleString('de-DE', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' });
+}
+
+// ── Timetable ──────────────────────────────────────────────────────────────
+const fmtDate = formatTime; // alias
+async function loadTimetable() {
+  try {
+    const r = await fetch('/api/timetable');
+    const d = await r.json();
+    const el = document.getElementById('sync-status');
+    if (d.last_sync) {
+      el.textContent = `Zuletzt synchronisiert: ${fmtDate(d.last_sync)}`;
+      el.style.color = 'var(--green)';
+    } else {
+      el.textContent = 'Noch nicht synchronisiert';
+      el.style.color = 'var(--muted)';
+    }
+    if (d.timetable) renderTimetable(d.timetable);
+    if (d.reminder_jobs && d.reminder_jobs.length > 0) renderReminderJobs(d.reminder_jobs);
+  } catch(e) { toast('Stundenplan konnte nicht geladen werden', 'err'); }
+}
+
+async function syncTimetable() {
+  const btn = document.getElementById('syncBtn');
+  const icon = document.getElementById('syncBtnIcon');
+  btn.disabled = true; icon.textContent = '⏳';
+  try {
+    const r = await fetch('/api/timetable/sync', { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || JSON.stringify(d));
+    toast('Stundenplan synchronisiert ✓');
+    loadTimetable();
+  } catch(e) {
+    toast('Sync fehlgeschlagen: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false; icon.textContent = '🔄';
+  }
+}
+
+async function testReminder() {
+  const btn = document.getElementById('testReminderBtn');
+  const icon = document.getElementById('testReminderIcon');
+  btn.disabled = true; icon.textContent = '⏳';
+  try {
+    const r = await fetch('/api/timetable/test-reminder', { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || JSON.stringify(d));
+    toast(d.message || 'Test-Erinnerung gesendet ✓');
+  } catch(e) {
+    toast('Test fehlgeschlagen: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false; icon.textContent = '🔔';
+  }
+}
+
+function renderTimetable(tt) {
+  const card = document.getElementById('timetable-grid-card');
+  const grid = document.getElementById('timetable-grid');
+  if (!tt || !tt.slots || !tt.slots.length) {
+    card.style.display = 'none'; return;
+  }
+  const days = tt.days || [];
+  let html = '<table class="tt-table"><thead><tr><th>Std.</th>';
+  days.forEach(d => html += `<th>${d}</th>`);
+  html += '</tr></thead><tbody>';
+  tt.slots.forEach(slot => {
+    const cells = slot.cells || [];
+    html += `<tr><td class="tt-slot">${slot.period}.<br>${(slot.start_time||'').replace(':','.')}</td>`;
+    cells.forEach(c => {
+      const subj = c && c.subject;
+      const room = c && c.room;
+      if (subj) {
+        html += `<td class="tt-cell-full"><div class="tt-subj">${subj}</div><div class="tt-room">${room || '–'}</div></td>`;
+      } else {
+        html += `<td class="tt-cell-empty">–</td>`;
+      }
+    });
+    html += '</tr>';
+  });
+  html += '</tbody></table>';
+  grid.innerHTML = html;
+  card.style.display = '';
+}
+
+function renderReminderJobs(jobs) {
+  const card = document.getElementById('reminder-jobs-card');
+  const list = document.getElementById('reminder-jobs-list');
+  if (!jobs || !jobs.length) { card.style.display = 'none'; return; }
+  list.innerHTML = jobs.map(j =>
+    `<div style="padding:3px 0; border-bottom:1px solid var(--border);">
+      <span style="color:var(--cyan);">${j.name}</span>
+      <span style="color:var(--muted); margin-left:12px; font-size:11px;">Nächste: ${j.next ? fmtDate(j.next) : '–'}</span>
+     </div>`
+  ).join('');
+  card.style.display = '';
+}
+
+// ── Auto-refresh logs every 30s when on logs tab ───────────────────────────
+setInterval(() => {
+  if (document.querySelector('.tab-btn[data-tab="logs"]').classList.contains('active')) loadLogs();
+}, 30000);
+
+// ── Init ───────────────────────────────────────────────────────────────────
+loadSettings();
+loadJobs();
+</script>
+</body>
+</html>
