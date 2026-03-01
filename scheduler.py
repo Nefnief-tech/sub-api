@@ -5,13 +5,21 @@ Two separate job pools:
   • Manual substitute-plan jobs  — stored in DB jobs table, shown in UI
   • Timetable reminder jobs      — ephemeral APScheduler jobs rebuilt from
                                    stored timetable on startup / after sync
+
+Burst polling after any cron fire:
+  Phase 1 — every 1 min for 15 min  (catch fast updates)
+  Phase 2 — every 5 min for 15 min  (catch late updates)
+  Only notifies when plan content actually changes (hash comparison).
 """
 import re
+import json
+import hashlib
 import logging
 from datetime import datetime, timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 
 import database as db
 import scraper as sc
@@ -25,6 +33,16 @@ _scheduler: BackgroundScheduler | None = None
 _DOW = {"Montag": 0, "Dienstag": 1, "Mittwoch": 2, "Donnerstag": 3, "Freitag": 4}
 _DOW_TO_NAME = {v: k for k, v in _DOW.items()}
 _REMINDER_ID_PREFIX = "reminder_"
+
+# ── Change detection ──────────────────────────────────────────────────────────
+_last_plan_hash: str | None = None
+_burst_active: bool = False
+
+
+def _hash_plan(plan: dict) -> str:
+    return hashlib.md5(
+        json.dumps(plan, sort_keys=True, ensure_ascii=False).encode()
+    ).hexdigest()
 
 
 # ── Startup / shutdown ────────────────────────────────────────────────────────
@@ -95,15 +113,129 @@ def reload_jobs():
     _reload_jobs()
 
 
-def _run_scrape(job_id: int | None = None):
-    """Core scrape-and-notify task."""
-    settings = db.get_settings()
+# ── Scrape helpers ────────────────────────────────────────────────────────────
+
+def _check_settings(settings: dict) -> tuple[bool, bool, list[str]]:
+    """Return (has_discord, has_gotify, missing_keys)."""
     missing = [k for k in ("base_url", "username", "password") if not settings.get(k)]
     has_discord = bool(settings.get("webhook_url"))
     has_gotify  = bool(settings.get("gotify_url")) and bool(settings.get("gotify_token"))
     if not has_discord and not has_gotify:
         missing.append("webhook_url or gotify_url+gotify_token")
+    return has_discord, has_gotify, missing
 
+
+def _fetch_plan(settings: dict) -> dict:
+    """Login and fetch substitute plan. Retries up to 3× with fresh sessions."""
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            s = sc.ElternPortalScraper(
+                settings["base_url"], settings["username"], settings["password"]
+            )
+            s.login()
+            return s.get_substitute_plan()
+        except Exception as e:
+            last_exc = e
+            log.warning("Scrape attempt %d failed: %s", attempt + 1, e)
+    raise last_exc  # type: ignore[misc]
+
+
+def _send_notifications(plan: dict, settings: dict,
+                        has_discord: bool, has_gotify: bool,
+                        job_id: int | None, include_empty: bool) -> str:
+    sent_to: list[str] = []
+    if has_discord:
+        nt.send_to_discord(settings["webhook_url"], plan, include_empty)
+        sent_to.append("Discord")
+    if has_gotify:
+        nt.send_to_gotify(
+            settings["gotify_url"], settings["gotify_token"],
+            plan, int(settings.get("gotify_priority") or 5), include_empty,
+        )
+        sent_to.append("Gotify")
+    msg = (f"Sent to {', '.join(sent_to)} — "
+           f"class {plan.get('class_name','?')}, {len(plan.get('days',[]))} days")
+    log.info(msg)
+    db.add_log("success", msg, job_id)
+    return msg
+
+
+# ── Burst polling ─────────────────────────────────────────────────────────────
+
+def _reset_burst_flag():
+    global _burst_active
+    _burst_active = False
+    log.info("Burst polling session ended")
+
+
+def _schedule_burst_polling(base_time: datetime):
+    """
+    Schedule change-detecting polls after a cron trigger:
+      Phase 1 – every 1 min for 15 min  (+1 … +14 min)
+      Phase 2 – every 5 min for 15 min  (+15, +20, +25, +30 min)
+    """
+    global _burst_active
+    if not _scheduler or _burst_active:
+        return
+    _burst_active = True
+
+    offsets = list(range(1, 15)) + list(range(15, 31, 5))
+    for i in offsets:
+        run_at = base_time + timedelta(minutes=i)
+        job_id_str = f"burst_{i}"
+        _scheduler.add_job(
+            _burst_poll,
+            DateTrigger(run_date=run_at, timezone="Europe/Berlin"),
+            id=job_id_str,
+            name=f"Burst-Poll +{i}min",
+            replace_existing=True,
+        )
+
+    # Reset flag after last burst job completes
+    _scheduler.add_job(
+        _reset_burst_flag,
+        DateTrigger(run_date=base_time + timedelta(minutes=31), timezone="Europe/Berlin"),
+        id="burst_reset",
+        replace_existing=True,
+    )
+    log.info("Burst polling scheduled: 14×1min + 4×5min from %s", base_time.strftime("%H:%M"))
+
+
+def _burst_poll():
+    """
+    Change-detecting poll used during burst sessions.
+    Fetches plan, compares hash — only sends notifications and updates alarm
+    if the plan content has actually changed.
+    """
+    global _last_plan_hash
+    settings = db.get_settings()
+    has_discord, has_gotify, missing = _check_settings(settings)
+    if missing:
+        return
+
+    include_empty = settings.get("notify_empty", "false").lower() == "true"
+    try:
+        plan = _fetch_plan(settings)
+        new_hash = _hash_plan(plan)
+        if new_hash == _last_plan_hash:
+            log.info("Burst poll: plan unchanged")
+            return
+        # Plan changed — notify and update alarm
+        _last_plan_hash = new_hash
+        log.info("Burst poll: plan changed, sending notifications")
+        _send_notifications(plan, settings, has_discord, has_gotify, None, include_empty)
+        _check_alarm_adjustment(plan)
+    except Exception as e:
+        log.warning("Burst poll failed: %s", e)
+
+
+def _run_scrape(job_id: int | None = None):
+    """Cron-triggered scrape. Always notifies on first run or plan change,
+    then launches a burst polling session to catch late updates."""
+    global _last_plan_hash
+    settings = db.get_settings()
+    has_discord, has_gotify, missing = _check_settings(settings)
     if missing:
         msg = f"Missing settings: {', '.join(missing)}"
         log.warning(msg)
@@ -112,39 +244,28 @@ def _run_scrape(job_id: int | None = None):
 
     include_empty = settings.get("notify_empty", "false").lower() == "true"
 
-    last_exc = None
-    for attempt in range(3):                     # up to 3 attempts with fresh sessions
-        try:
-            s = sc.ElternPortalScraper(settings["base_url"], settings["username"], settings["password"])
-            s.login()
-            plan = s.get_substitute_plan()
+    try:
+        plan = _fetch_plan(settings)
+        new_hash = _hash_plan(plan)
+        changed = (new_hash != _last_plan_hash)
+        _last_plan_hash = new_hash
 
-            sent_to: list[str] = []
-            if has_discord:
-                nt.send_to_discord(settings["webhook_url"], plan, include_empty)
-                sent_to.append("Discord")
-            if has_gotify:
-                nt.send_to_gotify(settings["gotify_url"], settings["gotify_token"],
-                                  plan, int(settings.get("gotify_priority") or 5), include_empty)
-                sent_to.append("Gotify")
-
-            msg = (f"Sent to {', '.join(sent_to)} — "
-                   f"class {plan.get('class_name','?')}, {len(plan.get('days',[]))} days")
+        if changed:
+            msg = _send_notifications(plan, settings, has_discord, has_gotify, job_id, include_empty)
+            _check_alarm_adjustment(plan)
+        else:
+            msg = f"Plan unverändert — kein Versand (class {plan.get('class_name','?')})"
             log.info(msg)
             db.add_log("success", msg, job_id)
 
-            # Check if early periods are cancelled and adjust alarm accordingly
-            _check_alarm_adjustment(plan)
-
-            return {"status": "success", "message": msg, "plan": plan}
-        except Exception as e:
-            last_exc = e
-            log.warning("Scrape attempt %d failed: %s", attempt + 1, e)
-
-    msg = str(last_exc)
-    log.error("Scrape failed after 3 attempts: %s", msg)
-    db.add_log("error", msg, job_id)
-    return {"status": "error", "message": msg}
+        # Kick off burst polling to catch any subsequent changes
+        _schedule_burst_polling(datetime.now())
+        return {"status": "success", "message": msg, "plan": plan}
+    except Exception as e:
+        msg = str(e)
+        log.error("Scrape failed: %s", msg)
+        db.add_log("error", msg, job_id)
+        return {"status": "error", "message": msg}
 
 
 def run_now() -> dict:
