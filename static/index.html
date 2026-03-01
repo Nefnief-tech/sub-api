@@ -1134,14 +1134,20 @@ async function syncTimetable() {
   }
 }
 
+async function safeJson(r) {
+  const text = await r.text();
+  if (!text) throw new Error(`HTTP ${r.status}`);
+  try { return JSON.parse(text); } catch { throw new Error(text.slice(0, 120)); }
+}
+
 async function testReminder() {
   const btn = document.getElementById('testReminderBtn');
   const icon = document.getElementById('testReminderIcon');
   btn.disabled = true; icon.textContent = '⏳';
   try {
     const r = await fetch('/api/timetable/test-reminder', { method: 'POST' });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.detail || JSON.stringify(d));
+    const d = await safeJson(r);
+    if (!r.ok) throw new Error(d.detail || d.message || JSON.stringify(d));
     toast(d.message || 'Test-Erinnerung gesendet ✓');
   } catch(e) {
     toast('Test fehlgeschlagen: ' + e.message, 'err');
@@ -1156,8 +1162,8 @@ async function testAlarm() {
   btn.disabled = true; icon.textContent = '⏳';
   try {
     const r = await fetch('/api/timetable/test-alarm', { method: 'POST' });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.detail || JSON.stringify(d));
+    const d = await safeJson(r);
+    if (!r.ok) throw new Error(d.detail || d.message || JSON.stringify(d));
     toast(d.message || 'Test-Wecker gesendet ✓');
   } catch(e) {
     toast('Test fehlgeschlagen: ' + e.message, 'err');

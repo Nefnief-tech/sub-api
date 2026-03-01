@@ -23,6 +23,7 @@ _scheduler: BackgroundScheduler | None = None
 
 # APScheduler day_of_week: 0 = Monday, …, 6 = Sunday
 _DOW = {"Montag": 0, "Dienstag": 1, "Mittwoch": 2, "Donnerstag": 3, "Freitag": 4}
+_DOW_TO_NAME = {v: k for k, v in _DOW.items()}
 _REMINDER_ID_PREFIX = "reminder_"
 
 
