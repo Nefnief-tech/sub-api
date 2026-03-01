@@ -92,34 +92,43 @@ def _reload_jobs():
             _add_aps_job(job)
 
 
-_CRON_DAY_NAMES = {
-    '0': 'sun', '7': 'sun',
-    '1': 'mon', '2': 'tue', '3': 'wed', '4': 'thu', '5': 'fri', '6': 'sat',
-}
+_CRON_DAY_NAMES = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
+# crontab: 0=Sun,1=Mon,...,6=Sat,7=Sun → APScheduler index (mon=0...sun=6)
+_CRON_TO_APS = {0: 6, 1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6}
+
+
+def _tok_to_aps_idx(t: str) -> int:
+    """Convert a crontab day token (number or name) to APScheduler 0-based index."""
+    t = t.strip().lower()
+    name_map = {'sun': 6, 'mon': 0, 'tue': 1, 'wed': 2, 'thu': 3, 'fri': 4, 'sat': 5}
+    if t in name_map:
+        return name_map[t]
+    return _CRON_TO_APS[int(t) % 7]
 
 
 def _crontab_dow_to_aps(dow: str) -> str:
-    """Convert crontab day_of_week (0/7=Sun, 1=Mon … 6=Sat) to APScheduler
-    day names (mon,tue,…,sun) so 0=Monday semantics don't shift the days."""
+    """Convert crontab day_of_week to a comma-separated list of APScheduler day names.
+    Handles wrapping ranges (e.g. 0-5 = Sun-Fri) by expanding to a list."""
     if dow == '*':
         return '*'
-    def _tok(t: str) -> str:
-        return _CRON_DAY_NAMES.get(t, t)  # leave names (mon/tue/…) unchanged
-    parts = []
+    indices: set[int] = set()
     for segment in dow.split(','):
+        step = 1
         if '/' in segment:
-            rng, step = segment.split('/', 1)
-            parts.append(f"{_convert_rng(rng, _tok)}/{step}")
+            segment, step_s = segment.split('/', 1)
+            step = int(step_s)
+        if '-' in segment:
+            a, b = segment.split('-', 1)
+            start, end = _tok_to_aps_idx(a), _tok_to_aps_idx(b)
+            if start <= end:
+                r = range(start, end + 1, step)
+            else:
+                # wraps around (e.g. sun=6 to fri=4 → 6,0,1,2,3,4)
+                r = list(range(start, 7, step)) + list(range(0, end + 1, step))
+            indices.update(r)
         else:
-            parts.append(_convert_rng(segment, _tok))
-    return ','.join(parts)
-
-
-def _convert_rng(s: str, conv) -> str:
-    if '-' in s:
-        a, b = s.split('-', 1)
-        return f"{conv(a)}-{conv(b)}"
-    return conv(s)
+            indices.add(_tok_to_aps_idx(segment))
+    return ','.join(_CRON_DAY_NAMES[i] for i in sorted(indices))
 
 
 def _add_aps_job(job: dict):
