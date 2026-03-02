@@ -85,7 +85,9 @@ def _reload_jobs():
         return
     # Only remove manual jobs (keep reminder, timetable-sync and alarm jobs)
     for job in _scheduler.get_jobs():
-        if not job.id.startswith(_REMINDER_ID_PREFIX) and job.id not in ("timetable_weekly_sync", "alarm_nightly"):
+        if not job.id.startswith(_REMINDER_ID_PREFIX) \
+                and not job.id.startswith("alarm_nightly") \
+                and job.id != "timetable_weekly_sync":
             job.remove()
     for job in db.list_jobs():
         if job["enabled"]:
@@ -672,19 +674,32 @@ def _schedule_alarm_job(settings: dict | None = None):
         return
     if settings is None:
         settings = db.get_settings()
-    send_time = settings.get("alarm_send_time", "22:00")
-    try:
-        sh, sm = map(int, send_time.split(":"))
-    except ValueError:
-        sh, sm = 22, 0
-    _scheduler.add_job(
-        _fire_alarm_notification,
-        CronTrigger(hour=sh, minute=sm, day_of_week="0-4", timezone="Europe/Berlin"),
-        id="alarm_nightly",
-        name=f"Wecker-Benachrichtigung ({send_time} Uhr)",
-        replace_existing=True,
-    )
-    log.info("Alarm job scheduled at %s", send_time)
+
+    # Remove all existing alarm jobs before re-scheduling
+    for job in _scheduler.get_jobs():
+        if job.id.startswith("alarm_nightly"):
+            job.remove()
+
+    send_times_raw = settings.get("alarm_send_time", "22:00")
+    send_times = [t.strip() for t in send_times_raw.split(",") if t.strip()]
+    if not send_times:
+        send_times = ["22:00"]
+
+    for i, send_time in enumerate(send_times):
+        try:
+            sh, sm = map(int, send_time.split(":"))
+        except ValueError:
+            log.warning("Alarm job: invalid time %r, skipping", send_time)
+            continue
+        job_id = f"alarm_nightly_{i}"
+        _scheduler.add_job(
+            _fire_alarm_notification,
+            CronTrigger(hour=sh, minute=sm, day_of_week="0-4", timezone="Europe/Berlin"),
+            id=job_id,
+            name=f"Wecker-Benachrichtigung ({send_time} Uhr)",
+            replace_existing=True,
+        )
+        log.info("Alarm job scheduled at %s (id=%s)", send_time, job_id)
 
 
 def test_alarm_notification() -> dict:
