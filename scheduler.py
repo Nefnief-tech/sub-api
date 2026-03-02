@@ -444,6 +444,12 @@ def sync_timetable() -> dict:
         msg = f"Stundenplan synchronisiert — {slot_count} Stunden gefunden"
         db.add_log("success", msg)
         log.info(msg)
+        # Push timetable silently to connected app clients
+        push.manager.broadcast_sync(
+            "__timetable__",
+            json.dumps(timetable, ensure_ascii=False),
+            priority=0,
+        )
         return {"status": "success", "message": msg, "timetable": timetable}
     except Exception as e:
         msg = str(e)

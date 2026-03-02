@@ -209,6 +209,12 @@ class GotifyTaskHandler extends TaskHandler {
       final title = (msg['title']   as String?) ?? '';
       final body  = (msg['message'] as String?) ?? '';
 
+      // Silent timetable update — no notification, just forward the data
+      if (title == '__timetable__') {
+        _send({'type': 'timetable', 'data': body});
+        return;
+      }
+
       // Show a local notification for every incoming Gotify message
       await _localNotif.show(
         DateTime.now().millisecondsSinceEpoch & 0x7FFFFFFF,
@@ -312,6 +318,7 @@ class AppState extends ChangeNotifier {
   String _statusMsg = 'Starte Dienst…';
   final List<AlarmEntry>  alarms        = [];
   final List<NotifEntry>  notifications = [];
+  Map<String, dynamic>?   timetable;
 
   bool   get connected => _connected;
   String get statusMsg => _statusMsg;
@@ -328,6 +335,10 @@ class AppState extends ChangeNotifier {
       final list = jsonDecode(aJson) as List;
       alarms.addAll(list.map((e) => AlarmEntry.fromJson(Map<String, dynamic>.from(e as Map))));
     }
+    final ttJson = prefs.getString('timetable');
+    if (ttJson != null) {
+      timetable = Map<String, dynamic>.from(jsonDecode(ttJson) as Map);
+    }
     notifyListeners();
   }
 
@@ -341,6 +352,11 @@ class AppState extends ChangeNotifier {
     await prefs.setString('alarm_history', jsonEncode(alarms.map((e) => e.toJson()).toList()));
   }
 
+  Future<void> _saveTimetable() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('timetable', jsonEncode(timetable));
+  }
+
   void onTaskData(Object data) {
     if (data is! Map) return;
     final type = data['type'] as String?;
@@ -348,6 +364,13 @@ class AppState extends ChangeNotifier {
       _connected = (data['connected'] as bool?) ?? false;
       _statusMsg = (data['msg']       as String?) ?? '';
       notifyListeners();
+    } else if (type == 'timetable') {
+      try {
+        timetable = Map<String, dynamic>.from(jsonDecode(data['data'] as String) as Map);
+        _statusMsg = '📅 Stundenplan aktualisiert';
+        notifyListeners();
+        _saveTimetable();
+      } catch (_) {}
     } else if (type == 'notification') {
       final title   = (data['title']   as String?) ?? '';
       final message = (data['message'] as String?) ?? '';
@@ -656,7 +679,7 @@ class _HomeScreenState extends State<HomeScreen>
       ..repeat(reverse: true);
     _pulse = Tween(begin: 0.5, end: 1.0).animate(
         CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut));
-    _tabCtrl = TabController(length: 2, vsync: this);
+    _tabCtrl = TabController(length: 3, vsync: this);
     _state.addListener(() => setState(() {}));
     FlutterForegroundTask.addTaskDataCallback(_state.onTaskData);
     _state.loadFromStorage();
@@ -766,12 +789,12 @@ class _HomeScreenState extends State<HomeScreen>
         indicatorSize: TabBarIndicatorSize.tab,
         dividerColor: _border,
         labelStyle: GoogleFonts.spaceGrotesk(fontWeight: FontWeight.w600, fontSize: 13),
-        tabs: const [Tab(text: '📨 Nachrichten'), Tab(text: '⏰ Alarme')],
+        tabs: const [Tab(text: '📨 Nachrichten'), Tab(text: '⏰ Alarme'), Tab(text: '📅 Stundenplan')],
       ),
       const SizedBox(height: 8),
       Expanded(child: TabBarView(
         controller: _tabCtrl,
-        children: [_buildNotifFeed(), _buildAlarmHistory()],
+        children: [_buildNotifFeed(), _buildAlarmHistory(), _buildTimetable()],
       )),
     ]),
   );
@@ -946,6 +969,116 @@ class _HomeScreenState extends State<HomeScreen>
         );
       },
     );
+  }
+
+  Widget _buildTimetable() {
+    final tt = _state.timetable;
+    if (tt == null) {
+      return Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+        Icon(Icons.table_chart_outlined, color: _muted, size: 40),
+        const SizedBox(height: 12),
+        Text('Kein Stundenplan empfangen',
+          style: GoogleFonts.spaceGrotesk(color: _muted, fontSize: 14)),
+        const SizedBox(height: 4),
+        Text('Wird nach der nächsten Synchronisation\nautomatisch geladen',
+          textAlign: TextAlign.center,
+          style: GoogleFonts.spaceGrotesk(color: _muted.withOpacity(0.6), fontSize: 12)),
+      ]));
+    }
+
+    final days  = List<String>.from((tt['days'] as List?) ?? []);
+    final slots = (tt['slots'] as List?) ?? [];
+    if (days.isEmpty || slots.isEmpty) {
+      return Center(child: Text('Stundenplan leer',
+        style: GoogleFonts.spaceGrotesk(color: _muted, fontSize: 14)));
+    }
+
+    return StatefulBuilder(builder: (ctx, setDay) {
+      int selDay = 0;
+      return StatefulBuilder(builder: (ctx2, setDay2) {
+        return Column(children: [
+          // Day selector
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+            child: Row(children: List.generate(days.length, (i) {
+              final active = i == selDay;
+              return GestureDetector(
+                onTap: () => setDay2(() => selDay = i),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 180),
+                  margin: const EdgeInsets.symmetric(horizontal: 4),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: active ? _accent : _bg2,
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: active ? _accent : _border),
+                  ),
+                  child: Text(days[i].substring(0, days[i].length > 2 ? 2 : days[i].length),
+                    style: GoogleFonts.spaceGrotesk(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: active ? _bg : _text,
+                    )),
+                ),
+              );
+            })),
+          ),
+          const SizedBox(height: 8),
+          // Slots for selected day
+          Expanded(child: ListView.separated(
+            itemCount: slots.length,
+            separatorBuilder: (_, __) => const SizedBox(height: 6),
+            itemBuilder: (_, i) {
+              final slot   = slots[i] as Map;
+              final cells  = (slot['cells'] as List?) ?? [];
+              final cell   = selDay < cells.length ? cells[selDay] : null;
+              final subj   = cell is Map ? (cell['subject'] as String? ?? '–') : '–';
+              final room   = cell is Map ? (cell['room']    as String? ?? '')  : '';
+              final period = slot['period']?.toString() ?? '${i + 1}';
+              final time   = (slot['start_time'] as String?) ?? '';
+              final isEmpty = subj == '–' || subj.trim().isEmpty;
+
+              return Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  color: isEmpty ? _bg2.withOpacity(0.5) : _bg2,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: isEmpty ? _border.withOpacity(0.3) : _border),
+                ),
+                child: Row(children: [
+                  Container(
+                    width: 32, height: 32,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: isEmpty ? _bg3 : _accentDim,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(period,
+                      style: GoogleFonts.jetBrainsMono(
+                        fontSize: 13, fontWeight: FontWeight.w700,
+                        color: isEmpty ? _muted : _accent)),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(isEmpty ? 'Freistunde' : subj,
+                      style: GoogleFonts.spaceGrotesk(
+                        fontSize: 15, fontWeight: FontWeight.w600,
+                        color: isEmpty ? _muted : _text)),
+                    if (room.isNotEmpty)
+                      Text('Raum $room',
+                        style: GoogleFonts.spaceGrotesk(fontSize: 12, color: _muted)),
+                  ])),
+                  if (time.isNotEmpty)
+                    Text(time,
+                      style: GoogleFonts.jetBrainsMono(fontSize: 11, color: _muted)),
+                ]),
+              );
+            },
+          )),
+        ]);
+      });
+    });
   }
 
   Widget _buildSettings() => Padding(
