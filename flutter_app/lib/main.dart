@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:alarm/alarm.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
@@ -32,9 +33,17 @@ class GotifyTaskHandler extends TaskHandler {
   Timer? _reconnectTimer;
   static final _alarmRx = RegExp(r'⏰ Wecker[:\s]+(\d{1,2}):(\d{2})');
 
+  final _localNotif = FlutterLocalNotificationsPlugin();
+
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
     await Alarm.init();
+
+    await _localNotif.initialize(
+      const InitializationSettings(
+        android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+      ),
+    );
 
     // Alarm fires in THIS (background) isolate — forward the event to main.
     Alarm.ringing.listen((alarmSet) {
@@ -142,16 +151,33 @@ class GotifyTaskHandler extends TaskHandler {
   Future<void> _onMessage(dynamic raw) async {
     try {
       final msg   = jsonDecode(raw as String);
-      final title = (msg['title'] as String?) ?? '';
+      final title = (msg['title']   as String?) ?? '';
+      final body  = (msg['message'] as String?) ?? '';
+
+      // Show a local notification for every incoming Gotify message
+      await _localNotif.show(
+        DateTime.now().millisecondsSinceEpoch & 0x7FFFFFFF,
+        title,
+        body,
+        const NotificationDetails(
+          android: AndroidNotificationDetails(
+            'gotify_messages',
+            'Gotify Nachrichten',
+            channelDescription: 'Benachrichtigungen vom Gotify Server',
+            importance: Importance.high,
+            priority: Priority.high,
+          ),
+        ),
+      );
+      _send({'type': 'notification', 'title': title, 'message': body});
+
+      // If it's an alarm message, additionally set the device alarm
       final match = _alarmRx.firstMatch(title);
       if (match == null) return;
       final h = int.parse(match.group(1)!);
       final m = int.parse(match.group(2)!);
       final t = '${h.toString().padLeft(2,'0')}:${m.toString().padLeft(2,'0')}';
 
-      // Schedule alarm directly from the background isolate using the alarm package.
-      // This works because alarm registers as a FlutterPlugin and is available
-      // in the background engine (no main isolate needed).
       final now = DateTime.now();
       var alarmDt = DateTime(now.year, now.month, now.day, h, m);
       if (alarmDt.isBefore(now)) alarmDt = alarmDt.add(const Duration(days: 1));
@@ -160,7 +186,7 @@ class GotifyTaskHandler extends TaskHandler {
         alarmSettings: AlarmSettings(
           id: 1,
           dateTime: alarmDt,
-          assetAudioPath: null, // use device default alarm sound
+          assetAudioPath: null,
           loopAudio: true,
           vibrate: true,
           androidFullScreenIntent: true,
@@ -180,7 +206,7 @@ class GotifyTaskHandler extends TaskHandler {
       _send({'type': 'alarm', 'hour': h, 'minute': m, 'time': t, 'label': title});
       FlutterForegroundTask.updateService(notificationText: '⏰ Wecker gesetzt: $t');
     } catch (e) {
-      _send({'type': 'status', 'connected': true, 'msg': 'Alarm-Fehler: $e'});
+      _send({'type': 'status', 'connected': true, 'msg': 'Fehler: $e'});
     }
   }
 
@@ -195,10 +221,17 @@ class AlarmEntry {
   AlarmEntry({required this.time, required this.label, required this.setAt});
 }
 
+class NotifEntry {
+  final String title, message;
+  final DateTime receivedAt;
+  NotifEntry({required this.title, required this.message, required this.receivedAt});
+}
+
 class AppState extends ChangeNotifier {
   bool   _connected = false;
   String _statusMsg = 'Starte Dienst…';
-  final List<AlarmEntry> history = [];
+  final List<AlarmEntry>  alarms = [];
+  final List<NotifEntry>  notifications = [];
 
   bool   get connected => _connected;
   String get statusMsg => _statusMsg;
@@ -210,13 +243,20 @@ class AppState extends ChangeNotifier {
       _connected = (data['connected'] as bool?) ?? false;
       _statusMsg = (data['msg']       as String?) ?? '';
       notifyListeners();
+    } else if (type == 'notification') {
+      final title   = (data['title']   as String?) ?? '';
+      final message = (data['message'] as String?) ?? '';
+      notifications.insert(0, NotifEntry(title: title, message: message, receivedAt: DateTime.now()));
+      if (notifications.length > 50) notifications.removeLast();
+      _statusMsg = '📨 $title';
+      notifyListeners();
     } else if (type == 'alarm') {
       final h     = (data['hour']   as int?)    ?? 0;
       final m     = (data['minute'] as int?)    ?? 0;
       final t     = (data['time']   as String?) ?? '$h:$m';
       final label = (data['label']  as String?) ?? '⏰ Wecker';
-      history.insert(0, AlarmEntry(time: t, label: label, setAt: DateTime.now()));
-      if (history.length > 20) history.removeLast();
+      alarms.insert(0, AlarmEntry(time: t, label: label, setAt: DateTime.now()));
+      if (alarms.length > 20) alarms.removeLast();
       _statusMsg = '✅ Wecker gestellt: $t Uhr';
       notifyListeners();
     }
@@ -493,13 +533,14 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   final _state      = AppState();
   final _urlCtrl    = TextEditingController();
   final _tokenCtrl  = TextEditingController();
   bool _showSettings = false;
   late AnimationController _pulseCtrl;
   late Animation<double>   _pulse;
+  late TabController       _tabCtrl;
 
   @override
   void initState() {
@@ -508,6 +549,7 @@ class _HomeScreenState extends State<HomeScreen>
       ..repeat(reverse: true);
     _pulse = Tween(begin: 0.5, end: 1.0).animate(
         CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut));
+    _tabCtrl = TabController(length: 2, vsync: this);
     _state.addListener(() => setState(() {}));
     FlutterForegroundTask.addTaskDataCallback(_state.onTaskData);
     _initService();
@@ -517,6 +559,7 @@ class _HomeScreenState extends State<HomeScreen>
   void dispose() {
     FlutterForegroundTask.removeTaskDataCallback(_state.onTaskData);
     _pulseCtrl.dispose();
+    _tabCtrl.dispose();
     super.dispose();
   }
 
@@ -606,7 +649,21 @@ class _HomeScreenState extends State<HomeScreen>
       const SizedBox(height: 16),
       _buildNextAlarm(),
       const SizedBox(height: 16),
-      Expanded(child: _buildHistory()),
+      TabBar(
+        controller: _tabCtrl,
+        labelColor: _accent,
+        unselectedLabelColor: _muted,
+        indicatorColor: _accent,
+        indicatorSize: TabBarIndicatorSize.tab,
+        dividerColor: _border,
+        labelStyle: GoogleFonts.spaceGrotesk(fontWeight: FontWeight.w600, fontSize: 13),
+        tabs: const [Tab(text: '📨 Nachrichten'), Tab(text: '⏰ Alarme')],
+      ),
+      const SizedBox(height: 8),
+      Expanded(child: TabBarView(
+        controller: _tabCtrl,
+        children: [_buildNotifFeed(), _buildAlarmHistory()],
+      )),
     ]),
   );
 
@@ -666,7 +723,7 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   Widget _buildNextAlarm() {
-    final last = _state.history.isEmpty ? null : _state.history.first;
+    final last = _state.alarms.isEmpty ? null : _state.alarms.first;
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(color: _bg2, borderRadius: BorderRadius.circular(14),
@@ -686,48 +743,82 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
-  Widget _buildHistory() {
-    if (_state.history.isEmpty) {
+  Widget _buildNotifFeed() {
+    if (_state.notifications.isEmpty) {
       return Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
         Icon(Icons.notifications_none_outlined, color: _muted, size: 40),
+        const SizedBox(height: 12),
+        Text('Keine Nachrichten bisher',
+          style: GoogleFonts.spaceGrotesk(color: _muted, fontSize: 14)),
+        const SizedBox(height: 4),
+        Text('Gotify-Nachrichten erscheinen hier',
+          style: GoogleFonts.spaceGrotesk(color: _muted.withOpacity(0.6), fontSize: 12)),
+      ]));
+    }
+    return ListView.separated(
+      itemCount: _state.notifications.length,
+      separatorBuilder: (_, __) => const SizedBox(height: 8),
+      itemBuilder: (_, i) {
+        final e = _state.notifications[i];
+        final t = '${e.receivedAt.hour.toString().padLeft(2,'0')}:${e.receivedAt.minute.toString().padLeft(2,'0')}';
+        return Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(color: _bg2, borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: _border)),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Expanded(child: Text(e.title,
+                style: GoogleFonts.spaceGrotesk(fontSize: 13, fontWeight: FontWeight.w600, color: _text))),
+              Text(t, style: GoogleFonts.jetBrainsMono(fontSize: 11, color: _muted)),
+            ]),
+            if (e.message.isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Text(e.message, maxLines: 3, overflow: TextOverflow.ellipsis,
+                style: GoogleFonts.spaceGrotesk(fontSize: 12, color: _muted)),
+            ],
+          ]),
+        );
+      },
+    );
+  }
+
+  Widget _buildAlarmHistory() {
+    if (_state.alarms.isEmpty) {
+      return Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+        Icon(Icons.alarm_outlined, color: _muted, size: 40),
         const SizedBox(height: 12),
         Text('Keine Alarme bisher',
           style: GoogleFonts.spaceGrotesk(color: _muted, fontSize: 14)),
         const SizedBox(height: 4),
-        Text('Wecker werden automatisch gestellt,\nsobald eine Nachricht eintrifft',
+        Text('Wecker werden automatisch gestellt,\nsobald eine Alarm-Nachricht eintrifft',
           textAlign: TextAlign.center,
           style: GoogleFonts.spaceGrotesk(color: _muted.withOpacity(0.6), fontSize: 12)),
       ]));
     }
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text('Verlauf', style: GoogleFonts.spaceGrotesk(
-        fontSize: 13, color: _muted, fontWeight: FontWeight.w600)),
-      const SizedBox(height: 8),
-      Expanded(child: ListView.separated(
-        itemCount: _state.history.length,
-        separatorBuilder: (_, __) => const SizedBox(height: 8),
-        itemBuilder: (_, i) {
-          final e = _state.history[i];
-          return Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            decoration: BoxDecoration(color: _bg2, borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: _border)),
-            child: Row(children: [
-              const Text('⏰', style: TextStyle(fontSize: 18)),
-              const SizedBox(width: 12),
-              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(e.time,
-                  style: GoogleFonts.jetBrainsMono(fontSize: 16, fontWeight: FontWeight.w600, color: _accent)),
-                Text(e.label, maxLines: 1, overflow: TextOverflow.ellipsis,
-                  style: GoogleFonts.spaceGrotesk(fontSize: 12, color: _muted)),
-              ])),
-              Text('${e.setAt.hour.toString().padLeft(2,'0')}:${e.setAt.minute.toString().padLeft(2,'0')}',
-                style: GoogleFonts.jetBrainsMono(fontSize: 11, color: _muted)),
-            ]),
-          );
-        },
-      )),
-    ]);
+    return ListView.separated(
+      itemCount: _state.alarms.length,
+      separatorBuilder: (_, __) => const SizedBox(height: 8),
+      itemBuilder: (_, i) {
+        final e = _state.alarms[i];
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: BoxDecoration(color: _bg2, borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: _border)),
+          child: Row(children: [
+            const Text('⏰', style: TextStyle(fontSize: 18)),
+            const SizedBox(width: 12),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(e.time,
+                style: GoogleFonts.jetBrainsMono(fontSize: 16, fontWeight: FontWeight.w600, color: _accent)),
+              Text(e.label, maxLines: 1, overflow: TextOverflow.ellipsis,
+                style: GoogleFonts.spaceGrotesk(fontSize: 12, color: _muted)),
+            ])),
+            Text('${e.setAt.hour.toString().padLeft(2,'0')}:${e.setAt.minute.toString().padLeft(2,'0')}',
+              style: GoogleFonts.jetBrainsMono(fontSize: 11, color: _muted)),
+          ]),
+        );
+      },
+    );
   }
 
   Widget _buildSettings() => Padding(
@@ -748,13 +839,13 @@ class _HomeScreenState extends State<HomeScreen>
           style: GoogleFonts.spaceGrotesk(fontSize: 20, fontWeight: FontWeight.w700)),
       ]),
       const SizedBox(height: 32),
-      _field('Server URL', _urlCtrl,
-        hint: 'http://192.168.1.x:8000  oder  https://gotify.meinserver.de', icon: Icons.dns_outlined),
+      _field('Gotify Server URL', _urlCtrl,
+        hint: 'https://gotify.meinserver.de', icon: Icons.dns_outlined),
       const SizedBox(height: 16),
-      _field('Push Token', _tokenCtrl,
+      _field('Client Token', _tokenCtrl,
         hint: '••••••••••••••••', icon: Icons.vpn_key_outlined, obscure: true),
       const SizedBox(height: 12),
-      Text('Direkt-Verbindung zum Scraper-Server  ·  oder Gotify Client-Token',
+      Text('Client-Token aus der Gotify Web-UI → Clients (nicht Apps!)',
         style: GoogleFonts.spaceGrotesk(fontSize: 12, color: _muted)),
       const Spacer(),
       SizedBox(width: double.infinity,
