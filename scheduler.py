@@ -444,11 +444,26 @@ def sync_timetable() -> dict:
         msg = f"Stundenplan synchronisiert — {slot_count} Stunden gefunden"
         db.add_log("success", msg)
         log.info(msg)
-        # Push timetable silently to connected app clients
+        # Send timetable silently via Gotify (priority -1 = silent) and WS broadcast
+        if settings.get("gotify_url") and settings.get("gotify_token"):
+            try:
+                import requests as _req
+                _req.post(
+                    f"{settings['gotify_url'].rstrip('/')}/message",
+                    json={
+                        "title":    "__timetable__",
+                        "message":  json.dumps(timetable, ensure_ascii=False),
+                        "priority": -1,
+                    },
+                    params={"token": settings["gotify_token"]},
+                    timeout=10,
+                )
+            except Exception as _e:
+                log.warning("Timetable Gotify push failed: %s", _e)
         push.manager.broadcast_sync(
             "__timetable__",
             json.dumps(timetable, ensure_ascii=False),
-            priority=0,
+            priority=-1,
         )
         return {"status": "success", "message": msg, "timetable": timetable}
     except Exception as e:
