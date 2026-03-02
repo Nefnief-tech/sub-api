@@ -62,7 +62,7 @@ DEFAULT_SETTINGS = {
     "notify_empty": "false",
     "alarm_enabled": "false",
     "alarm_offset": "45",
-    "alarm_send_time": "22:00",
+    "alarm_send_time": "22:00, 06:00",
     "alarm_priority": "9",
 }
 

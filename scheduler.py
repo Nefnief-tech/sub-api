@@ -596,8 +596,8 @@ def _check_alarm_adjustment(plan: dict):
         log.error("Alarm adjustment failed: %s", e)
 
 
-def _get_next_school_day_first_class() -> dict | None:
-    """Return the first non-empty class for the next school day (Mon–Fri)."""
+def _get_first_class(start_delta: int = 1) -> dict | None:
+    """Return the first non-empty class starting from *start_delta* days from now."""
     stored = db.get_timetable()
     if not stored:
         return None
@@ -606,7 +606,7 @@ def _get_next_school_day_first_class() -> dict | None:
     slots = tt.get("slots", [])
 
     now = datetime.now()
-    for delta in range(1, 8):
+    for delta in range(start_delta, start_delta + 7):
         candidate = now + timedelta(days=delta)
         wd = candidate.weekday()        # 0=Mon … 6=Sun
         if wd >= 5:
@@ -632,6 +632,13 @@ def _get_next_school_day_first_class() -> dict | None:
                 }
         break
     return None
+
+
+def _get_next_school_day_first_class() -> dict | None:
+    """Before noon: returns today's first class (morning backup).
+    From noon onwards: returns the next school day's first class."""
+    delta = 0 if datetime.now().hour < 12 else 1
+    return _get_first_class(start_delta=delta)
 
 
 def _fire_alarm_notification():
