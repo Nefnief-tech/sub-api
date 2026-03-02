@@ -102,7 +102,7 @@ class GotifyTaskHandler extends TaskHandler {
       _channel = WebSocketChannel.connect(wsUri);
       _channel!.ready.then((_) {
         _send({'type': 'status', 'connected': true, 'msg': 'Verbunden — warte auf Nachrichten…'});
-        FlutterForegroundTask.updateService(notificationText: '🟢 Verbunden mit Gotify');
+        FlutterForegroundTask.updateService(notificationText: '🟢 Verbunden — warte auf Nachrichten…');
       }).catchError((e) {
         _channel = null;
         final hint = e.toString().contains('401')
@@ -528,8 +528,8 @@ class _HomeScreenState extends State<HomeScreen>
 
     FlutterForegroundTask.init(
       androidNotificationOptions: AndroidNotificationOptions(
-        channelId:          'gotify_channel',
-        channelName:        'Gotify Hintergrunddienst',
+        channelId:          'push_channel',
+        channelName:        'Vertretungsplan Hintergrunddienst',
         channelDescription: 'Empfängt und setzt Alarm-Benachrichtigungen',
         onlyAlertOnce:      true,
       ),
@@ -748,13 +748,13 @@ class _HomeScreenState extends State<HomeScreen>
           style: GoogleFonts.spaceGrotesk(fontSize: 20, fontWeight: FontWeight.w700)),
       ]),
       const SizedBox(height: 32),
-      _field('Gotify Server URL', _urlCtrl,
-        hint: 'https://push.meinserver.de', icon: Icons.dns_outlined),
+      _field('Server URL', _urlCtrl,
+        hint: 'http://192.168.1.x:8000  oder  https://gotify.meinserver.de', icon: Icons.dns_outlined),
       const SizedBox(height: 16),
-      _field('Client Token', _tokenCtrl,
+      _field('Push Token', _tokenCtrl,
         hint: '••••••••••••••••', icon: Icons.vpn_key_outlined, obscure: true),
       const SizedBox(height: 12),
-      Text('Client-Token aus der Gotify Web-UI → Clients (nicht Apps!)',
+      Text('Direkt-Verbindung zum Scraper-Server  ·  oder Gotify Client-Token',
         style: GoogleFonts.spaceGrotesk(fontSize: 12, color: _muted)),
       const Spacer(),
       SizedBox(width: double.infinity,

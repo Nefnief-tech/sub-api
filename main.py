@@ -2,17 +2,19 @@
 FastAPI backend for the Eltern-Portal substitute plan scraper.
 Serves the frontend and exposes a JSON API.
 """
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 import database as db
 import scheduler as sched
+from push import manager as ws_manager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,6 +25,7 @@ logging.basicConfig(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
+    ws_manager.set_loop(asyncio.get_event_loop())
     sched.start_scheduler()
     yield
     sched.stop_scheduler()
@@ -50,6 +53,7 @@ class SettingsIn(BaseModel):
     gotify_url:        str = ""
     gotify_token:      str = ""
     gotify_priority:   str = "5"
+    push_token:        str = ""
     notify_empty:      str = "false"
     reminders_enabled: str = "false"
     reminder_priority: str = "7"
@@ -203,3 +207,22 @@ def get_timetable():
         "reminder_priority": settings.get("reminder_priority", "7"),
         "reminder_jobs":    sched.get_reminder_jobs(),
     }
+
+
+# ── Built-in push stream (Gotify-compatible WebSocket) ────────────────────────
+
+@app.websocket("/stream")
+async def push_stream(ws: WebSocket, token: str = Query(default="")):
+    settings = db.get_settings()
+    push_token = settings.get("push_token", "")
+    if push_token and token != push_token:
+        await ws.close(code=4001)
+        return
+    await ws_manager.connect(ws)
+    try:
+        while True:
+            await ws.receive_text()   # keep connection alive, ignore client messages
+    except WebSocketDisconnect:
+        pass
+    finally:
+        ws_manager.disconnect(ws)

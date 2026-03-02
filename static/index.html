@@ -603,7 +603,21 @@
     </div>
 
     <div class="card">
-      <div class="card-title">🟣 Gotify <div class="sep"></div></div>
+      <div class="card-title">📲 In-App Push (direkt) <div class="sep"></div></div>
+      <div class="form-grid">
+        <div class="field full">
+          <label>Push Token</label>
+          <input type="password" id="s-push-token" placeholder="••••••••••••••••">
+          <div class="help-text">Beliebiges Passwort — trag dasselbe im Flutter-App ein. Leer lassen = kein Auth.</div>
+        </div>
+      </div>
+      <div style="margin-top:8px; font-size:12px; color:var(--muted);">
+        Die App verbindet sich direkt mit diesem Server unter <code>/stream?token=&lt;token&gt;</code> — kein Gotify nötig.
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">🟣 Gotify (optional) <div class="sep"></div></div>
       <div class="form-grid">
         <div class="field full">
           <label>Server URL</label>
@@ -875,6 +889,7 @@ async function loadSettings() {
     document.getElementById('s-username').value       = s.username         || '';
     document.getElementById('s-password').value       = s.password         || '';
     document.getElementById('s-webhook').value        = s.webhook_url      || '';
+    document.getElementById('s-push-token').value     = s.push_token       || '';
     document.getElementById('s-gotify-url').value     = s.gotify_url       || '';
     document.getElementById('s-gotify-token').value   = s.gotify_token     || '';
     document.getElementById('s-gotify-priority').value= s.gotify_priority  || '5';
@@ -898,6 +913,7 @@ async function saveSettings() {
     username:          document.getElementById('s-username').value.trim(),
     password:          document.getElementById('s-password').value,
     webhook_url:       document.getElementById('s-webhook').value.trim(),
+    push_token:        document.getElementById('s-push-token').value,
     gotify_url:        document.getElementById('s-gotify-url').value.trim(),
     gotify_token:      document.getElementById('s-gotify-token').value,
     gotify_priority:   document.getElementById('s-gotify-priority').value.trim() || '5',

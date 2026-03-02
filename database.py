@@ -57,6 +57,7 @@ DEFAULT_SETTINGS = {
     "gotify_url": "",
     "gotify_token": "",
     "gotify_priority": "5",
+    "push_token": "",
     "reminders_enabled": "false",
     "reminder_priority": "7",
     "notify_empty": "false",

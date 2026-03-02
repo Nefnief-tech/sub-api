@@ -24,6 +24,7 @@ from apscheduler.triggers.date import DateTrigger
 import database as db
 import scraper as sc
 import notifier as nt
+import push
 
 log = logging.getLogger(__name__)
 
@@ -196,6 +197,9 @@ def _send_notifications(plan: dict, settings: dict,
             plan, int(settings.get("gotify_priority") or 5), include_empty,
         )
         sent_to.append("Gotify")
+    # Also push to in-app WebSocket clients
+    title, body = nt.build_gotify_message(plan, include_empty)
+    push.manager.broadcast_sync(title, body, int(settings.get("gotify_priority") or 5))
     msg = (f"Sent to {', '.join(sent_to)} — "
            f"class {plan.get('class_name','?')}, {len(plan.get('days',[]))} days")
     log.info(msg)
@@ -591,9 +595,16 @@ def _check_alarm_adjustment(plan: dict):
             first_class=effective,
             priority=int(settings.get("alarm_priority") or 9),
         )
-        log.info("Alarm adjusted to %s (skipped periods: %s)", alarm_time, skipped)
     except Exception as e:
-        log.error("Alarm adjustment failed: %s", e)
+        log.error("Alarm adjustment (Gotify) failed: %s", e)
+    skipped_str = ", ".join(f"{p}." for p in skipped)
+    full = nt._subject_full(effective["subject"]) if effective.get("subject") else effective.get("subject", "?")
+    push.manager.broadcast_sync(
+        f"⏰ Wecker: {alarm_time}",
+        f"🔄 Wecker angepasst auf {alarm_time} Uhr\n❌ {skipped_str} Stunde{'n' if len(skipped)>1 else ''} entfallen\n📚 Erste Stunde: {full}",
+        int(settings.get("alarm_priority") or 9),
+    )
+    log.info("Alarm adjusted to %s (skipped periods: %s)", alarm_time, skipped)
 
 
 def _get_first_class(start_delta: int = 1) -> dict | None:
@@ -645,9 +656,6 @@ def _fire_alarm_notification():
     settings = db.get_settings()
     if settings.get("alarm_enabled", "false").lower() != "true":
         return
-    if not settings.get("gotify_url") or not settings.get("gotify_token"):
-        log.warning("Alarm notification: Gotify not configured")
-        return
 
     first = _get_next_school_day_first_class()
     if not first or not first["start_time"]:
@@ -663,17 +671,27 @@ def _fire_alarm_notification():
         log.error("Alarm notification: could not parse start_time %s", first["start_time"])
         return
 
-    try:
-        nt.send_alarm_notification(
-            settings["gotify_url"], settings["gotify_token"],
-            alarm_time=alarm_time,
-            subject=first["subject"], room=first["room"],
-            day=first["day"], period=first["period"],
-            priority=int(settings.get("alarm_priority") or 9),
-        )
-        log.info("Alarm notification sent: %s for %s", alarm_time, first["day"])
-    except Exception as e:
-        log.error("Alarm notification failed: %s", e)
+    priority = int(settings.get("alarm_priority") or 9)
+    full = nt._subject_full(first["subject"]) if first.get("subject") else first.get("subject", "?")
+
+    if settings.get("gotify_url") and settings.get("gotify_token"):
+        try:
+            nt.send_alarm_notification(
+                settings["gotify_url"], settings["gotify_token"],
+                alarm_time=alarm_time,
+                subject=first["subject"], room=first["room"],
+                day=first["day"], period=first["period"],
+                priority=priority,
+            )
+        except Exception as e:
+            log.error("Alarm notification (Gotify) failed: %s", e)
+
+    push.manager.broadcast_sync(
+        f"⏰ Wecker: {alarm_time}",
+        f"Guten Morgen — dein Wecker wurde für {alarm_time} Uhr gestellt.\n\n📚 Erste Stunde: {full}\n🚪 Raum: {first.get('room') or '–'} · 📅 {first['day']} · {first['period']}. Stunde",
+        priority,
+    )
+    log.info("Alarm notification sent: %s for %s", alarm_time, first["day"])
 
 
 def _schedule_alarm_job(settings: dict | None = None):
