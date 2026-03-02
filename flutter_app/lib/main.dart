@@ -56,6 +56,9 @@ class GotifyTaskHandler extends TaskHandler {
       }
     });
 
+    // After boot, re-register saved alarm if the alarm package lost it
+    await _restoreAlarmIfNeeded();
+
     final url   = await FlutterForegroundTask.getData<String>(key: 'gotify_url')   ?? '';
     final token = await FlutterForegroundTask.getData<String>(key: 'gotify_token') ?? '';
     _connect(url, token);
@@ -63,14 +66,65 @@ class GotifyTaskHandler extends TaskHandler {
 
   @override
   void onRepeatEvent(DateTime timestamp) {
-    // Watchdog: if channel is null something died — reload creds and reconnect
+    // Watchdog: reconnect if WS died
     if (_channel == null) _reconnectFromPrefs();
+    // Watchdog: re-register alarm if it was dropped (e.g. by battery saver)
+    _restoreAlarmIfNeeded();
   }
 
   @override
   Future<void> onDestroy(DateTime timestamp) async {
     _reconnectTimer?.cancel();
     _channel?.sink.close();
+  }
+
+  /// Saves alarm to foreground task storage so it survives a full process kill.
+  static Future<void> persistAlarm(int h, int m, String label) async {
+    await FlutterForegroundTask.saveData(key: 'alarm_h',     value: h.toString());
+    await FlutterForegroundTask.saveData(key: 'alarm_m',     value: m.toString());
+    await FlutterForegroundTask.saveData(key: 'alarm_label', value: label);
+  }
+
+  Future<void> _restoreAlarmIfNeeded() async {
+    final hStr = await FlutterForegroundTask.getData<String>(key: 'alarm_h') ?? '';
+    final mStr = await FlutterForegroundTask.getData<String>(key: 'alarm_m') ?? '';
+    if (hStr.isEmpty || mStr.isEmpty) return;
+    final h = int.tryParse(hStr);
+    final m = int.tryParse(mStr);
+    if (h == null || m == null) return;
+
+    // Check if alarm is already registered
+    final existing = await Alarm.getAlarms();
+    if (existing.any((a) => a.id == 1)) return;
+
+    // Re-register
+    final now = DateTime.now();
+    var alarmDt = DateTime(now.year, now.month, now.day, h, m);
+    if (alarmDt.isBefore(now)) alarmDt = alarmDt.add(const Duration(days: 1));
+    final label = await FlutterForegroundTask.getData<String>(key: 'alarm_label') ?? '⏰ Wecker';
+    final t = '${h.toString().padLeft(2,'0')}:${m.toString().padLeft(2,'0')}';
+
+    await Alarm.set(
+      alarmSettings: AlarmSettings(
+        id: 1,
+        dateTime: alarmDt,
+        assetAudioPath: null,
+        loopAudio: true,
+        vibrate: true,
+        androidFullScreenIntent: true,
+        androidStopAlarmOnTermination: false,
+        volumeSettings: VolumeSettings.fade(
+          volume: 0.8,
+          fadeDuration: const Duration(seconds: 5),
+        ),
+        notificationSettings: NotificationSettings(
+          title: '⏰ Wecker — $t Uhr',
+          body: label,
+          stopButton: 'Snooze',
+        ),
+      ),
+    );
+    FlutterForegroundTask.updateService(notificationText: '⏰ Wecker wiederhergestellt: $t');
   }
 
   @override
@@ -205,6 +259,9 @@ class GotifyTaskHandler extends TaskHandler {
           ),
         ),
       );
+
+      // Persist alarm so it can be re-registered after a device restart
+      await GotifyTaskHandler.persistAlarm(h, m, title);
 
       _send({'type': 'alarm', 'hour': h, 'minute': m, 'time': t, 'label': title});
       FlutterForegroundTask.updateService(notificationText: '⏰ Wecker gesetzt: $t');
@@ -618,6 +675,7 @@ class _HomeScreenState extends State<HomeScreen>
     await [
       Permission.notification,
       Permission.scheduleExactAlarm,
+      Permission.ignoreBatteryOptimizations,
     ].request();
 
     FlutterForegroundTask.init(
@@ -629,7 +687,7 @@ class _HomeScreenState extends State<HomeScreen>
       ),
       iosNotificationOptions: const IOSNotificationOptions(showNotification: false),
       foregroundTaskOptions: ForegroundTaskOptions(
-        eventAction:    ForegroundTaskEventAction.repeat(120000), // 2 minutes in ms
+        eventAction:    ForegroundTaskEventAction.repeat(60000), // every 1 min watchdog
         autoRunOnBoot:  true,
         allowWakeLock:  true,
         allowWifiLock:  true,
