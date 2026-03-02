@@ -1025,12 +1025,26 @@ class _HomeScreenState extends State<HomeScreen>
             })),
           ),
           const SizedBox(height: 8),
-          // Slots for selected day
-          Expanded(child: ListView.separated(
-            itemCount: slots.length,
+          // Slots for selected day — trim trailing empty periods
+          Expanded(child: Builder(builder: (ctx) {
+            // Build filtered list: drop trailing slots with no subject
+            final visible = slots.toList();
+            while (visible.isNotEmpty) {
+              final last  = visible.last as Map;
+              final cells = (last['cells'] as List?) ?? [];
+              final cell  = selDay < cells.length ? cells[selDay] : null;
+              final subj  = cell is Map ? (cell['subject'] as String? ?? '') : '';
+              if (subj.trim().isEmpty || subj == '–') {
+                visible.removeLast();
+              } else {
+                break;
+              }
+            }
+            return ListView.separated(
+            itemCount: visible.length,
             separatorBuilder: (_, __) => const SizedBox(height: 6),
             itemBuilder: (_, i) {
-              final slot   = slots[i] as Map;
+              final slot   = visible[i] as Map;
               final cells  = (slot['cells'] as List?) ?? [];
               final cell   = selDay < cells.length ? cells[selDay] : null;
               final subj   = cell is Map ? (cell['subject'] as String? ?? '–') : '–';
@@ -1075,7 +1089,8 @@ class _HomeScreenState extends State<HomeScreen>
                 ]),
               );
             },
-          )),
+          );
+          })),
         ]);
       });
     });
