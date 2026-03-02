@@ -222,22 +222,67 @@ class AlarmEntry {
   final String time, label;
   final DateTime setAt;
   AlarmEntry({required this.time, required this.label, required this.setAt});
+
+  Map<String, dynamic> toJson() =>
+      {'time': time, 'label': label, 'setAt': setAt.toIso8601String()};
+
+  factory AlarmEntry.fromJson(Map<String, dynamic> j) => AlarmEntry(
+        time:  j['time']  as String,
+        label: j['label'] as String,
+        setAt: DateTime.parse(j['setAt'] as String),
+      );
 }
 
 class NotifEntry {
   final String title, message;
   final DateTime receivedAt;
   NotifEntry({required this.title, required this.message, required this.receivedAt});
+
+  Map<String, dynamic> toJson() => {
+        'title': title, 'message': message,
+        'receivedAt': receivedAt.toIso8601String(),
+      };
+
+  factory NotifEntry.fromJson(Map<String, dynamic> j) => NotifEntry(
+        title:      j['title']   as String,
+        message:    j['message'] as String,
+        receivedAt: DateTime.parse(j['receivedAt'] as String),
+      );
 }
 
 class AppState extends ChangeNotifier {
   bool   _connected = false;
   String _statusMsg = 'Starte Dienst…';
-  final List<AlarmEntry>  alarms = [];
+  final List<AlarmEntry>  alarms        = [];
   final List<NotifEntry>  notifications = [];
 
   bool   get connected => _connected;
   String get statusMsg => _statusMsg;
+
+  Future<void> loadFromStorage() async {
+    final prefs = await SharedPreferences.getInstance();
+    final nJson = prefs.getString('notif_history');
+    if (nJson != null) {
+      final list = jsonDecode(nJson) as List;
+      notifications.addAll(list.map((e) => NotifEntry.fromJson(Map<String, dynamic>.from(e as Map))));
+    }
+    final aJson = prefs.getString('alarm_history');
+    if (aJson != null) {
+      final list = jsonDecode(aJson) as List;
+      alarms.addAll(list.map((e) => AlarmEntry.fromJson(Map<String, dynamic>.from(e as Map))));
+    }
+    notifyListeners();
+  }
+
+  Future<void> _saveNotifications() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('notif_history', jsonEncode(notifications.map((e) => e.toJson()).toList()));
+  }
+
+  Future<void> _saveAlarms() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('alarm_history', jsonEncode(alarms.map((e) => e.toJson()).toList()));
+  }
 
   void onTaskData(Object data) {
     if (data is! Map) return;
@@ -253,6 +298,7 @@ class AppState extends ChangeNotifier {
       if (notifications.length > 50) notifications.removeLast();
       _statusMsg = '📨 $title';
       notifyListeners();
+      _saveNotifications();
     } else if (type == 'alarm') {
       final h     = (data['hour']   as int?)    ?? 0;
       final m     = (data['minute'] as int?)    ?? 0;
@@ -262,6 +308,7 @@ class AppState extends ChangeNotifier {
       if (alarms.length > 20) alarms.removeLast();
       _statusMsg = '✅ Wecker gestellt: $t Uhr';
       notifyListeners();
+      _saveAlarms();
     }
   }
 }
@@ -555,6 +602,7 @@ class _HomeScreenState extends State<HomeScreen>
     _tabCtrl = TabController(length: 2, vsync: this);
     _state.addListener(() => setState(() {}));
     FlutterForegroundTask.addTaskDataCallback(_state.onTaskData);
+    _state.loadFromStorage();
     _initService();
   }
 
