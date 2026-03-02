@@ -16,6 +16,7 @@ dependencies:
   google_fonts: ^6.2.1
   flutter_foreground_task: ^8.14.0
   alarm: ^5.0.0
+  flutter_markdown: ^0.7.4
 
 dev_dependencies:
   flutter_test:

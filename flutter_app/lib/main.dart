@@ -4,6 +4,7 @@ import 'package:alarm/alarm.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
@@ -774,9 +775,24 @@ class _HomeScreenState extends State<HomeScreen>
               Text(t, style: GoogleFonts.jetBrainsMono(fontSize: 11, color: _muted)),
             ]),
             if (e.message.isNotEmpty) ...[
-              const SizedBox(height: 4),
-              Text(e.message,
-                style: GoogleFonts.spaceGrotesk(fontSize: 12, color: _muted)),
+              const SizedBox(height: 6),
+              MarkdownBody(
+                data: e.message,
+                styleSheet: MarkdownStyleSheet(
+                  p:          GoogleFonts.spaceGrotesk(fontSize: 12, color: _muted),
+                  strong:     GoogleFonts.spaceGrotesk(fontSize: 12, color: _text, fontWeight: FontWeight.w700),
+                  em:         GoogleFonts.spaceGrotesk(fontSize: 12, color: _muted, fontStyle: FontStyle.italic),
+                  code:       GoogleFonts.jetBrainsMono(fontSize: 11, color: _accent, backgroundColor: _bg3),
+                  blockquoteDecoration: BoxDecoration(
+                    color: _bg3,
+                    border: Border(left: BorderSide(color: _accent, width: 3)),
+                  ),
+                  blockquotePadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  horizontalRuleDecoration: BoxDecoration(
+                    border: Border(top: BorderSide(color: _border, width: 1)),
+                  ),
+                ),
+              ),
             ],
           ]),
         );
