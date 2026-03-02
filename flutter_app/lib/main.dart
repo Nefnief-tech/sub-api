@@ -778,19 +778,22 @@ class _HomeScreenState extends State<HomeScreen>
               const SizedBox(height: 6),
               MarkdownBody(
                 data: e.message,
+                softLineBreak: true,
                 styleSheet: MarkdownStyleSheet(
-                  p:          GoogleFonts.spaceGrotesk(fontSize: 12, color: _muted),
-                  strong:     GoogleFonts.spaceGrotesk(fontSize: 12, color: _text, fontWeight: FontWeight.w700),
-                  em:         GoogleFonts.spaceGrotesk(fontSize: 12, color: _muted, fontStyle: FontStyle.italic),
-                  code:       GoogleFonts.jetBrainsMono(fontSize: 11, color: _accent, backgroundColor: _bg3),
-                  blockquoteDecoration: BoxDecoration(
+                  p:     const TextStyle(fontSize: 12, color: _muted, height: 1.5),
+                  strong: const TextStyle(fontSize: 12, color: _text, fontWeight: FontWeight.bold, height: 1.5),
+                  em:    const TextStyle(fontSize: 12, color: _muted, fontStyle: FontStyle.italic, height: 1.5),
+                  code:  TextStyle(fontSize: 11, color: _accent, backgroundColor: _bg3,
+                                   fontFamily: 'monospace'),
+                  blockquoteDecoration: const BoxDecoration(
                     color: _bg3,
                     border: Border(left: BorderSide(color: _accent, width: 3)),
                   ),
                   blockquotePadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  horizontalRuleDecoration: BoxDecoration(
+                  horizontalRuleDecoration: const BoxDecoration(
                     border: Border(top: BorderSide(color: _border, width: 1)),
                   ),
+                  blockSpacing: 6,
                 ),
               ),
             ],
