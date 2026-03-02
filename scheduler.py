@@ -83,9 +83,9 @@ def stop_scheduler():
 def _reload_jobs():
     if not _scheduler:
         return
-    # Only remove manual jobs (keep reminder + timetable-sync jobs)
+    # Only remove manual jobs (keep reminder, timetable-sync and alarm jobs)
     for job in _scheduler.get_jobs():
-        if not job.id.startswith(_REMINDER_ID_PREFIX) and job.id != "timetable_weekly_sync":
+        if not job.id.startswith(_REMINDER_ID_PREFIX) and job.id not in ("timetable_weekly_sync", "alarm_nightly"):
             job.remove()
     for job in db.list_jobs():
         if job["enabled"]:
