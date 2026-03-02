@@ -159,13 +159,14 @@ class GotifyTaskHandler extends TaskHandler {
         DateTime.now().millisecondsSinceEpoch & 0x7FFFFFFF,
         title,
         body,
-        const NotificationDetails(
+        NotificationDetails(
           android: AndroidNotificationDetails(
             'gotify_messages',
             'Gotify Nachrichten',
             channelDescription: 'Benachrichtigungen vom Gotify Server',
             importance: Importance.high,
             priority: Priority.high,
+            styleInformation: BigTextStyleInformation(body),
           ),
         ),
       );
@@ -773,7 +774,7 @@ class _HomeScreenState extends State<HomeScreen>
             ]),
             if (e.message.isNotEmpty) ...[
               const SizedBox(height: 4),
-              Text(e.message, maxLines: 3, overflow: TextOverflow.ellipsis,
+              Text(e.message,
                 style: GoogleFonts.spaceGrotesk(fontSize: 12, color: _muted)),
             ],
           ]),
