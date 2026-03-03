@@ -662,7 +662,7 @@ def _get_first_class(start_delta: int = 1) -> dict | None:
                     "subject":    subj,
                     "room":       room,
                 }
-        break
+        # No classes found for this day — try the next school day
     return None
 
 

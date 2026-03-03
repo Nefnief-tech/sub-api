@@ -93,9 +93,11 @@ class GotifyTaskHandler extends TaskHandler {
     final m = int.tryParse(mStr);
     if (h == null || m == null) return;
 
-    // Check if alarm is already registered
+    // Only skip re-registration if the alarm is still scheduled in the future.
+    // If it was dismissed via the OS (not the app), the alarm package may still
+    // list id=1 with a past dateTime — treat that as "not registered".
     final existing = await Alarm.getAlarms();
-    if (existing.any((a) => a.id == 1)) return;
+    if (existing.any((a) => a.id == 1 && a.dateTime.isAfter(DateTime.now()))) return;
 
     // Re-register
     final now = DateTime.now();
