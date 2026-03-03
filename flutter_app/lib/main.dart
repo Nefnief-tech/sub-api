@@ -209,6 +209,9 @@ class GotifyTaskHandler extends TaskHandler {
       final title = (msg['title']   as String?) ?? '';
       final body  = (msg['message'] as String?) ?? '';
 
+      // Keepalive ping from server — ignore silently
+      if ((msg['type'] as String?) == 'ping') return;
+
       // Silent timetable update — no notification, just forward the data
       if (title == '__timetable__') {
         _send({'type': 'timetable', 'data': body});

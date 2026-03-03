@@ -221,8 +221,12 @@ async def push_stream(ws: WebSocket, token: str = Query(default="")):
     await ws_manager.connect(ws)
     try:
         while True:
-            await ws.receive_text()   # keep connection alive, ignore client messages
-    except WebSocketDisconnect:
+            try:
+                await asyncio.wait_for(ws.receive_text(), timeout=30)
+            except asyncio.TimeoutError:
+                # Send a keepalive ping so NAT/proxies don't drop the idle connection
+                await ws.send_text('{"type":"ping"}')
+    except (WebSocketDisconnect, Exception):
         pass
     finally:
         ws_manager.disconnect(ws)
